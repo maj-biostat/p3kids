@@ -89,9 +89,9 @@ gendat <- cmpfun(function(){
   # Timepoints
   t <- 0:4
   
-  sig_hosp <- 0.0
-  sig_clinic <- 0
-  sig_person <- 0
+  sig_hosp <- 0.05
+  sig_clinic <- 0.2
+  sig_person <- 0.5
   
   d0 <- create_base(hospts, n_clinic, t)
   
@@ -150,31 +150,31 @@ gendat <- cmpfun(function(){
 # sig_clinic <- 0.2
 # sig_person <- 0.5
 
-d <- gendat()
-
-names(d)
-
-dfig <- d[, .(prop = mean(y)), keyby = .(hosp_id, clinic_id, time, tx_active)] 
-
-dfig <- merge(dfig, data.frame(hosp_id = 1:hospts, 
-                               start_tx = rep(1:4, each = 2)), by = "hosp_id")
-
-ds1 <- merge(expand.grid(hosp_id = 1:hospts, 
-                 clinic_id = 1:length(n_clinic)),
-             data.frame(hosp_id = 1:hospts, 
-                        start_tx = rep(1:4, each = 2)), by = "hosp_id")
-
-ggplot(dfig, aes(x = time, y = prop, group = paste0(hosp_id, ":", clinic_id)))+
-  geom_point(size = 0.4, alpha = 0.2) + 
-  geom_line() +
-  scale_x_continuous(lim = c(0, 5))+
-  scale_y_continuous(lim = c(0, 1), breaks = c(0, 0.5, 1)) +
-  facet_grid(paste0("Start tx ", start_tx) ~ paste0("Clinic ", clinic_id))+
-  geom_vline(data = ds1, aes(xintercept = start_tx), linetype = 2)
-
-
-
-names(d)
+# d <- gendat()
+# 
+# names(d)
+# 
+# dfig <- d[, .(prop = mean(y)), keyby = .(hosp_id, clinic_id, time, tx_active)] 
+# 
+# dfig <- merge(dfig, data.frame(hosp_id = 1:hospts, 
+#                                start_tx = rep(1:4, each = 2)), by = "hosp_id")
+# 
+# ds1 <- merge(expand.grid(hosp_id = 1:hospts, 
+#                  clinic_id = 1:length(n_clinic)),
+#              data.frame(hosp_id = 1:hospts, 
+#                         start_tx = rep(1:4, each = 2)), by = "hosp_id")
+# 
+# ggplot(dfig, aes(x = time, y = prop, group = paste0(hosp_id, ":", clinic_id)))+
+#   geom_point(size = 0.4, alpha = 0.2) + 
+#   geom_line() +
+#   scale_x_continuous(lim = c(0, 5))+
+#   scale_y_continuous(lim = c(0, 1), breaks = c(0, 0.5, 1)) +
+#   facet_grid(paste0("Start tx ", start_tx) ~ paste0("Clinic ", clinic_id))+
+#   geom_vline(data = ds1, aes(xintercept = start_tx), linetype = 2)
+# 
+# 
+# 
+# names(d)
 
 
 library(doParallel)
@@ -198,17 +198,35 @@ results <- foreach(i = 1:1000,
   set.seed(10000000 + i)
   
   d <- gendat()
-  l1 <- glmer(y ~ k1 + k2 + k3 + k4 + tx_active + (1|hosp_id), data = d, family = binomial)
-
-  # flog.info("Finished trial: sim = %s", i)
-  return(l1)
+  l1 <- glmer(y ~ k1 + k2 + k3 + k4 + tx_active + (1|hosp_id) + (1|clinic_int) + (1|subj_int), 
+    data = d, family = binomial)
+  # format(object.size(d), units = "MB")
+  # format(object.size(l1), units = "MB")
+  # format(object.size(s), units = "b")
+  
+  s <- list(coef = summary(l1)$coef, varcorr = VarCorr(l1))
+  d <- NULL
+  l1 <- NULL
+  
+  return(s)
 }
 
 
-lapply(1:length(results), function(x) summary(results[[x]])$coef["tx_active", "Pr(>|z|)"] < 0.05 )
+stopCluster(cl)
+
+beepr::beep() 
+rdsfilename <- paste0("out/res-",format(Sys.time(), "%Y-%m-%d-%H-%M-%S"), ".RDS")
+
+saveRDS(list(results = results,
+  w = warnings()), 
+  rdsfilename)
 
 
 
+# res <- readRDS("out/res-2019-04-04-23-20-13.RDS")
+# m <- res$results
+# win <- unlist(lapply(1:length(m), function(x) summary(results[[x]])$coef["tx_active", "Pr(>|z|)"] < 0.05 ))
+# mean(win)
 
 # l1 <- glmer(y ~ k1 + k2 + k3 + k4 + tx_active + (1|hosp_id), data = d, family = binomial)
 # summary(l1)
