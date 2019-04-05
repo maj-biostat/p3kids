@@ -196,7 +196,9 @@ results <- foreach(i = 1:1000,
   # i = 1
   #flog.info("Starting trial: i = %s", i)
   set.seed(10000000 + i)
-  
+ 
+cat(paste0("Iteration ", i, "\n")) 
+
   d <- gendat()
   l1 <- glmer(y ~ k1 + k2 + k3 + k4 + tx_active + (1|hosp_id) + (1|clinic_int) + (1|subj_int), 
     data = d, family = binomial)
