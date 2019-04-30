@@ -1,0 +1,140 @@
+---
+title: "P3 Kids - context and notes on SW"
+editor_options:
+  chunk_output_type: console
+output:
+  html_document:
+    theme: united
+    toc: yes
+  pdf_document:
+    toc: yes
+    toc_depth: 3
+    number_sections: true
+    fig_caption: yes
+bibliography: steppedwedge.bib
+---
+
+
+
+
+
+
+```{r setup, include=FALSE}
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(tidyr))
+suppressPackageStartupMessages(library(ggplot2))
+
+suppressPackageStartupMessages(library(gridExtra))
+suppressPackageStartupMessages(library(grid))
+suppressPackageStartupMessages(library(tinytex))
+suppressPackageStartupMessages(library(SWSamp))
+
+knitr::opts_chunk$set(echo = TRUE)
+
+inv_logit <- function(x){
+  return(exp(x)/(1+exp(x)))
+}
+# p to logit
+logit <- function(p){
+  return(log(p/(1-p)))
+}
+prob_to_odd <- function(x){
+  return(x/(1-x))
+}
+odd_to_prob <- function(x){
+  return(x/(1+x))
+}
+compute_betas <- function(p1, p2){
+  b0 <- log(p1/(1-p1))
+  
+  b1 <- log(p2/(1-p2)) - b0
+  
+  betas <- c(b0, b1)
+  names(betas) <- c("b0", "b1")
+  betas
+}
+```
+
+# Preamble
+
+For vast majority of sample size calculation for stepped wedge designs assume cross-sectional sampling within clusters. That is, they assume that you have a large population that constitutes a cluster and every 'look' is assumed to be a simple random sample of individuals from that population. In other words, every look is assumed to be on a different (independent) group of patients. The patients within a cluster will plausibly be similar to others in the cluster but a within-person correlation does not need to be considered because there are no repeat-measures on individuals. However, many stepped wedge designs actually operate on open or closed clusters (P3 Kids is an example) and these do have repeat measures on individuals. In the extreme case of a closed sample, we examine the same group of individuals at each 'look' of our experiment and therefore very much need to consider the repeat measure correlation in all cases where it is likely to exist as well as the between cluster variance. @Copas2015 provides a contemporary typology for SW designs that digs deeper into the differing designs.
+
+@Hooper2016 and @Baio2015 present sample size calculation approaches adapted to closed cohorts - both recommend simulation. Section 5 of @Hughes2015 (and @Thompson2018 chapter 3) highlight some of the key issues with cohort SW (individuals crossing from control to treatment, repeat measures, loss to followup, lags in treatment effects - carry over, waning efficacy, differential treatment effects across clusters, differential secular trends across clusters) (also see @Davey2015 for more on this).
+
+The standard SW-CRT includes a period before and after rollout where all clusters are all under the control arm and then all treatment arm respectively. The periods/steps will all be of equal size with the same number of observations and there are the same number of clusters in each sequence. The median number of clusters that is typically reported on in the literature is approx. 16 randomised to around 4 sequences.
+
+It has been suggested that the periods before and after rollout can be dropped and that this will increase efficiency and reduce the necessary sample size (@Thompson2018). There are designs with varying numbers of observations in each period and there may be periods when no observations are collected (@Thompson2018).
+
+One variant that sits between a standard cluster and a SW desing is a Parallel cluster randomised trial with baseline observations (@Thompson2018). In a 'CRT with baseline observations', there is a baseline period before the intervention is introduced to any clusters, as well as the follow-up period after introduction of the intervention in a subset of the clusters. The outcome is observed in both periods of the study. The baseline period could contain the same number of observations as the follow-up period, or it could be larger or smaller. 
+
+Reasons for SW include ethics, logistics, improving recruitment - all have been argued for and against. Another reason is to adopt a SW if the intervention were to be rolled out in this manner anyway @Prost2015. 
+
+SWTs are thought to require a smaller sample size and maintain the same level of power than a CRT applied to the same setting because the intervention and control conditions can be compared within-clusters as well as between clusters. However, this is only true when there a large correlation between individuals in the same cluster and clusters are large @Hussey2007. The cost of using a SW design is that they confound the treatment effect with secular trends.
+
+Aside note!!! @Baio2015 provides a correction to the formulation put forward by @Woertman2013, which is what was used to get the first ballpark sample size.
+
+# Treatment Effects
+
+Intervention effect may change over time due to:
+
+1. transition lags for the intervention to have an effect after being applied to a cluster - cannot assume instantaneous changes.
+2. treatment effect wanes over the pweriod of exposure
+3. treatment effect differing in each cluster (due to cluster differences or implementation differences)
+
+# Analysis Methods
+
+Must consider (1) secular trends (2) clustering.
+
+SW trials lend themselves to vertical and horizontal comparisons. Horizontal comparisons are based on measurements taken before and after the intervention is introduced in each cluster, and are unbiased if there are no secular trends. Vertical comparisons are based on outcome measurements from clusters that have switched to the intervention condition and those from clusters that have yet to switch, and are unbiased under randomisation since at any time point, which clusters are in intervention and control conditions will have been determined at random. 
+
+Many stepped wedge trials are analysed with mixed models and include a random effect for cluster and fixed effects for time period to account for secular trends. This results in combining both vertical and horizontal comparisons of intervention and control clusters. The horizontal comparison is a controlled before-after comparison and is not, strictly speaking, a randomised comparison. Thus the validity of this horizontal comparison requires that the secular trend of the outcome be accounted for in each cluster (@Davey2015).
+
+The Hussey and Hughes model, @Hussey2007, applies a cluster-level random intercept model and includes a period efect and a treatment effect. The model implies that the same change over time is assumed for all clusters (aside - @Matthews2017 provide better insight into the HH model than the original paper). The HH model gives unbiased estimates of the treatment effect but is sensitive to mis-specified random effects, has inflated type-one error rates when the number of clusters is small and when the period effects vary by cluster.
+
+Presenting cluster-level analysis is difficult because some of the cluster observations will be control and some treatment. Within-period (vertical) uses the vertical comparisons for estimating the treatment effect.
+
+Hubbard_2010_gee_or_not discuss the distinction between the use of GLMM and GEE (namely the conditional versus marginal means).
+
+Also see @Barker2016.
+
+## Modifications
+
+See @Thompson2018 chapter 3. Includes:
+
++ random effect for cluster-period interactions
++ random effect for each period
++ intervention lag and wane
++ random intervention model
+
+# MJTODO 
+
+see swsamp.pdf 
+Hargreaves et al. (2015);
+Beard et al. (2015) 
+Copas et al. (2015). 
+
+Girling AJ and Hemming K. Statistical efficiency and optimal design for
+stepped cluster studies under linear mixed effects models. Statistics in
+Medicine 2016. 35. (13):2149–2166.
+
+# P3 Kids 
+
+P3 Kids involves an open-cohort SW design with 8 clusters. The sample size calculation from Julie assumed a cluster size of 80-100 children. However, the actual number of children per cluster is about 1000. I do not understand why the sample size assumed 100. The baseline vaccination coverage is estimated to be about 4-50% in the control arm and have an absolute increase by about 20% due to the intervention.
+
+The primary outcome is the proportion of children attending high-risk clinics, who receive at least one dose of influenza vaccination, as determined by the Australian Immunisation Registry (AIR). The aim (or one of the aims) is to increase this proportion conditional on a multi-component treatment intervention. The design has a baseline period in which vaccination status will be determined for children with chronic medical conditions attending hospitals in 2019, via the AIR. 
+
+The patient-list will be generated through local department databases and ICD10 code searches. A new patient list will be sourced each year to ensure new patients are captured and discharged patients (i.e. no longer high-risk???) are not re-captured.
+
+There is potential for confounding with secular trends in vaccination uptake, but confounding due to changes in an individuals health is unlikely???
+
+# Examples of stepped wedge CRT
+
+The following are examples of SW CRTs:
+
+1. @King2007: Evaluation of thE mexican universal Health insurancE programme
+2. @Leontjevas2013: Multi-structured Depression Management in nursing Homes
+3. EPOCH - SAP requested by email
+4. 
+5. 
+
+# Bibliography

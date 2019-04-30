@@ -1,0 +1,503 @@
+---
+title: "P3 Kids - context and notes on SW"
+subtitle: "`r knitr::current_input(dir = TRUE)`"
+author: "Mark Jones"
+date: "`r Sys.time()`"
+output:
+  html_document:
+    number_sections: yes
+    self_contained: yes
+    theme: united
+    toc: yes
+    toc_depth: 3
+geometry: left=0.2cm,right=0.2cm,top=1cm,bottom=1cm
+editor_options:
+  chunk_output_type: console
+bibliography: steppedwedge.bib  
+---
+
+<style type="text/css">
+.main-container {
+  max-width: 1800px;
+  margin-left: auto;
+  margin-right: auto;
+}
+</style>
+
+```{r setup, include=FALSE}
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(tidyr))
+suppressPackageStartupMessages(library(ggplot2))
+
+suppressPackageStartupMessages(library(gridExtra))
+suppressPackageStartupMessages(library(grid))
+suppressPackageStartupMessages(library(tinytex))
+suppressPackageStartupMessages(library(SWSamp))
+
+knitr::opts_chunk$set(echo = TRUE)
+
+inv_logit <- function(x){
+  return(exp(x)/(1+exp(x)))
+}
+# p to logit
+logit <- function(p){
+  return(log(p/(1-p)))
+}
+odd <- function(p){
+  return(p/(1-p))
+}
+prob <- function(odd){
+  return(odd/(1+odd))
+}
+compute_betas <- function(p1, p2){
+  b0 <- log(p1/(1-p1))
+  
+  b1 <- log(p2/(1-p2)) - b0
+  
+  betas <- c(b0, b1)
+  names(betas) <- c("b0", "b1")
+  betas
+}
+```
+
+
+# Scenarios
+
+At a minimum recommend we look at null effect (no treatment difference), small(er) effect (0.3 vs 0.33), secular time trends effects, heterogeneity amongst number of individuals per cluster. Differing ICC.
+
+# Sample size and power
+
+[SWSamp](https://github.com/giabaio/SWSamp) is an R package by @Baio2016 that provides a simulation-based approach to estimating sample size for cross-sectional and cohort SW designs with a dichotomous response (amongst others). In the background it uses standard random number generation routines and the `lme4` package developed by @Bates2015, which is the standard/goto frequentist tool for analysing generalised linear mixed models (GLMM) in R, @R2018.
+
+In simulation the idea is to consider a data generating process (DGP) that describes how the trial data arise. Ideally, this should be the model that is used to analyse the data, after the study has been conducted, but unfortunately we do not have divine insight and so can not be certain that our model specification is correct when it is applied to the real data. Once the DGP has been developed the data can be simulated a large number of times and the resulting virtual trials are analysed using the proposed methodology, e.g. GLMM with random  effects for cluster and subject. The optimal sample size is set to the minimum number of subjects for which the proportion of simulated trials that correctly deem the intervention as significant at the set significance level (that is a mouthful) is greater than or equal to the required power. 
+
+In order to achieve the above we need:
+
+1. sample size n (e.g. total number of individuals measured) 
+2. the number of clusters I and time points J
+3. estimates of relevant parameters informed from past research/expert knowledge
+4. simulated datasets of size n from the assumed model
+5. analyses of the resulting datasets to record whether the intervention effect can be detected
+
+# Sample size calculations (closed form approximations)
+
+@Hussey2007 provide a closed form solution for sample size calculations for cross-sectional SW (normally distributed response) as does @Woertman2013 (see correction by @Baio2015). The methods can applied in cases where the outcome is not Normally distributed by considering asymptotic arguments i.e. CLT. 
+
+Note that the assumption behind this closed form approximation is that the data is cross-sectional whereas the P3 study will actually have repeat measures on individuals and therefore we will have less information than what the Hussey approach assumes. Nevertheless, the approximations provide ballpark numbers.
+
+```{r}
+
+p1 <- 0.50 # baseline probability of the outcome in the control group
+p2 <- 0.60
+or <- odd(p2)/odd(p1)
+
+I <- 8                 # number of clusters
+J <- 4                 # number of time points (excludes the baseline mmt)
+K <- 100               # assumed average cluster size
+rho <- 0.01            # assumed intra-class correlation
+sig.level <- 0.05      # assumed significance level
+# which.var tells HH.binary that it should compute the variance components
+# starting with the within cluster variance. the total variance is derived
+# by combining the within and residual variance.
+which.var <- "within"  
+
+res <- HH.binary(p1, or, 
+          I=8,
+          J,
+          K,
+          rho,
+          sig.level,
+          which.var,
+          X=NULL)
+res$power
+res$setting
+```
+
+The above aligns with the manual calculations originally provided by JM that compute the design effect used to multiply the standard parallel trial sample size (see appendix).
+
+For interests sake (but not to be heavily relied on - need to implement simulation) the study design (steps etc) can be specified as a matrix passed to `HH.binary`.
+
+```{r, eval = F}
+suppressPackageStartupMessages(library(SWSamp))
+
+p1 <- 0.30 # baseline probability of the outcome in the control group
+p2 <- 0.45
+or <- 1.9091
+
+I <- 8                 # number of clusters
+J <- 1                 # number of time points (excl the baseline mmt)
+K <- 80                # assumed average cluster size
+rho <- 0.05            # assumed intra-class correlation
+sig.level <- 0.05      # assumed significance level
+which.var <- "within"  # default implies sigma is for residual - 
+
+X <- array(0, dim = c(8, 2))
+X[,1] <- 0
+X[4:8,2] <- 1
+
+HH.binary(p1, or, 
+          I=8,
+          J,
+          K,
+          rho,
+          sig.level,
+          which.var,
+          X=X)
+```
+
+
+# What impacts power?
+
+The following shows the first few lines of a dataset containing the first order approximation of power as a function of the parameter space. The rest is saved to file (pwr_matrix.csv).
+
+```{r, echo = F}
+K <- c(30,40,50,60,70,80)   # assumed average cluster size
+J <- c(4, 5)          # number of time points (excl the baseline mmt)
+I <- c(8, 10)              # number of clusters
+Rho <- c(0.01, 0.05)       # assumed intra-class correlation
+P1 <- c(0.3, 0.4, 0.5)
+delta <- c(0.05, 0.1, 0.2)
+sig.level <- 0.05      # assumed significance level
+which.var <- "within"  # default implies sigma is for residual - 
+
+sprintf("n_per_clust, num_steps, num_clust, rho, p1, p2, or, pwr")
+
+df_pwr <- data.frame(n_per_clust = NA,
+                     num_steps = NA, 
+                     num_clust = NA, 
+                     rho = NA, 
+                     p1 = NA, 
+                     p2 = NA, 
+                     or = NA, 
+                     pwr = NA)
+
+
+for(k in 1:length(K)){
+  for(j in  1:length(J)){
+    for(i in 1:length(I)){
+      for(rho in 1:length(Rho)){
+        for(p1 in 1:length(P1)){
+          for(p2 in 1:length(delta)){
+            
+            betas <- compute_betas(P1[p1], P1[p1] + delta[p2])
+            or <- exp(betas[2])
+            res1 <- HH.binary(p1 = P1[p1], 
+                              OR = or,
+                              I = I[i],
+                              J = J[j],
+                              K = K[k],
+                              rho = Rho[rho],
+                              sig.level,
+                              which.var)
+            
+            df_pwr <- rbind(df_pwr, c(K[k], J[j], I[i], 
+                                      Rho[rho], P1[p1], 
+                                      P1[p1] + delta[p2], 
+                                      or, res1$power))
+            
+            # cat(sprintf("%d, %d, %d, %.3f, %.2f, 
+            #  %.2f, %.5f, %.3f", 
+            #  K[k], J[j], I[i], Rho[rho], 
+            #  P1[p1], P2[p2], or, res1$power), "\n")
+
+          }
+        }
+      }
+    }
+  }
+}
+df_pwr <- df_pwr[complete.cases(df_pwr),]
+df_pwr$p_diff <- df_pwr$p2 - df_pwr$p1
+write.csv(df_pwr, file = "pwr_matrix.csv", row.names = F)
+head(df_pwr[, names(df_pwr)[1:8]], 20)
+df_pwr$grp <- with(df_pwr, paste0(rho, "-", p1, "-", p2))
+df_pwr$probs <- paste0(df_pwr$p1, ", ", df_pwr$p2)
+
+df_tmp1 <- df_pwr %>%
+  dplyr::filter(num_clust == 8)
+
+df_tmp2 <- df_pwr %>%
+  dplyr::filter(num_clust == 10)
+
+```
+
+The figure on the next page shows power as a function of cluster size faceted by baseline probability and number of steps (top assumes 8 clusters, bottom assumes 10). The legend shows the probability of vaccination in the treatment arm. Increasing the number of steps appears to guard power from increases in the baseline probability (because power is influenced by both baseline probability and the treatment effect). This means that if we are wrong with our initial estimate of the baseline probability then we are more likely to be able to detect an effect if we have more steps rather than less. The results show little sensitivity to changes in ICC (0.05 and 0.2 used).
+
+\newpage
+
+```{r, echo = F}
+ggplot2::theme_set(theme_bw())
+ggplot2::theme_update(legend.position="bottom")
+ggplot2::theme_update(legend.title=element_blank())
+# See http://ggplot2.tidyverse.org/reference/theme.html
+ggplot2::theme_update(text=element_text(size=12,  family="sans"))
+ggplot2::theme_update(axis.text.x=element_text(size=10,  family="sans"))
+ggplot2::theme_update(axis.text.y=element_text(size=10,  family="sans"))
+
+ 
+plot1 <- ggplot(df_tmp1, aes(x = n_per_clust, y = pwr, group = grp, colour = factor(p2)))+
+  geom_line() +
+  guides(col = guide_legend(ncol = 4))+
+  scale_y_continuous("Power")+
+  scale_x_continuous("Individuals per cluster")+
+  facet_grid(paste0("Num steps = ", num_steps)~paste0("Baseline prob = ", p1))
+
+plot2 <- ggplot(df_tmp2, aes(x = n_per_clust, y = pwr, group = grp, colour = factor(p2)))+
+  geom_line() +
+  guides(col = guide_legend(ncol = 4))+
+  scale_y_continuous("Power")+
+  scale_x_continuous("Individuals per cluster")+
+  facet_grid(paste0("Num steps = ", num_steps)~paste0("Baseline prob = ", p1))
+```
+
+```{r, echo = F, fig.cap="Power as a function of sample size (top assumes 8 clusters bottom assumes 10 clusters)", fig.height=10, fig.width=6}
+ 
+grid.arrange(plot1, plot2, ncol = 1)
+
+```
+
+# Simulation based approach
+
+The closed form results cannot accomodate complex designs, but simulation-based methods do. First test that a simulation constructed making the same assumptions as above produces similar results. Note that the following does not yet account for secular temporal trends - neither do the earlier approaches. It takes about 10 minutes to run so (for my reference) the results are obtained from a copy of the simulation I ran earlier.
+
+```{r, eval=T}
+p1 <- 0.50 # baseline probability of the outcome in the control group
+p2 <- 0.6
+or <- odd(p2)/odd(p1) # corresponds to the OR assoc with the trt effect
+
+I <- 8                 # number of clusters
+J <- 4                 # number of time points 
+                       # (excluding the baseline measurement)
+K <- 100                # assumed average cluster size
+rho <- 0.01            # assumed intra-class correlation
+sig.level <- 0.05      # assumed significance level
+which.var <- "within"  # default implies sigma is for residual - 
+
+# Note that natural.scale=TRUE implies that we are passing an odds ratio as b.trt
+# in make.swt (responsible for making the datasets). 
+# The following line is applied when natural.scale=TRUE:
+# OR <- b.trt. 
+# However, if natural.scale=FALSE then make.swt does: OR <- exp(b.trt).
+# Also b.time has to be set to zero otherwise the DGP will assume a time effect.
+
+pow.cont <- sim.power(I = I, J = J, K = K, design = "cross-sec", 
+                      mu = p1, 
+                      b.trt = or, 
+                      b.time = 0,
+                      sigma.y = NULL, sigma.e = NULL, rho = rho,
+                      sigma.a = NULL, rho.ind = NULL, sigma.v = NULL,
+                      n.sims = 1000, formula = NULL, family = "binomial", 
+                      natural.scale = TRUE, 
+                      sig.level = 0.05, plot = T)
+
+saveRDS(pow.cont, "sim_1.RDS")
+# beepr::beep(4)          
+```
+
+The simulation suggests that power is around 95% (below) which suggests that the analytic resuls are conservative here.
+
+\newpage
+
+```{r, echo = T}
+pow.cont <- readRDS("sim_1.RDS")
+pow.cont
+# OR estimated as:
+exp(as.numeric(pow.cont$theta[1]))
+exp(1.96*as.numeric(pow.cont$theta[2]))
+```
+
+\newpage
+
+As a start we should incorporate a correlation structure to account for the repeat measures. Repeating the above simulation with a repeat measure correlation of 0.4 (arbitrary) reduces the power to 93%, so not a big deal. Additionally the parameter estimates for the treatment effect are roughly the same (slightly increased SE on the cohort simulation as expected). 
+
+```{r, eval=F, echo = T}
+p1 <- 0.50 # baseline probability of the outcome in the control group
+p2 <- 0.6
+or <- odd(p2)/odd(p1) # corresponds to the OR assoc with the trt effect
+
+I <- 8                 # number of clusters
+J <- 4                 # number of time points 
+                       # (excluding the baseline measurement)
+K <- 100                # assumed average cluster size
+rho <- 0.01            # assumed intra-class correlation
+sig.level <- 0.05      # assumed significance level
+which.var <- "within"  # default implies sigma is for residual 
+
+# Note that natural.scale=TRUE implies that we are passing an odds ratio as b.trt
+# in make.swt (responsible for making the datasets) the following line is 
+# applied for natural.scale=TRUE
+# OR <- b.trt. However, if natural.scale=FALSE then OR <- exp(b.trt).
+
+pow.cont2 <- sim.power(I = I, J = J, K = K, design = "cohort", 
+                      mu = p1, b.trt = or, b.time = 0,
+                      sigma.y = NULL, sigma.e = NULL, rho = rho,
+                      sigma.a = NULL, rho.ind = 0.5, sigma.v = NULL,
+                      n.sims = 3000, formula = NULL, family = "binomial", 
+                      natural.scale = TRUE, 
+                      sig.level = 0.05, plot = F)
+
+saveRDS(pow.cont2, "sim_2.RDS")
+# beepr::beep(4)          
+```
+
+```{r, echo = F}
+pow.cont2 <- readRDS("sim_2.RDS")
+pow.cont2
+# OR estimated as:
+exp(as.numeric(pow.cont2$theta[1]))
+exp(1.96*as.numeric(pow.cont2$theta[2]))
+```
+
+# Summary
+
+The sample size calculation by H&H aligns pretty well to the (cross-sectional) simulation approach for the parameters considered here. The (closed cohort assuming a repeat measure correlation of 0.5) simulation approach suggests a slightly lower power for the same parameter values used here.
+
+One thing that we might be able to do to simplify the analysis is to take a simple random sample from the population and then adopt a cross-sectional assumption on the data. We will examine this next.
+
+\newpage
+
+# Appendix 1 JM calculations
+
+These invole computing N for a two-sample test for proportions and then applying a design effect to get to the required ss i.e. number of clusters required. The approach is based on @Woertman2013.
+
+```{r}
+p1 <- 0.30      # baseline
+p2 <- 0.45      # trt arm
+alpha <- 0.05   # sig level
+beta  <- 0.1    # => 90% power 
+
+N <-  2 * ceiling(power.prop.test(p1=p1,p2=p2,
+                                  sig.level=alpha,
+                                  power=1-beta)$n)
+# Total N participants required
+N
+```
+
+Update total sample size assuming randomised cluster trial:
+
+```{r}
+rho <- 0.05       # intracluster correlation (ICC)
+# (modified from 100 which it was originally in julies code)
+n.cluster <- 80   # number of subjects within a cluster 
+
+N.rct <- ceiling(N * (1 + (n.cluster-1)*rho))
+N.rct
+clusters.rct <- ceiling(N.rct/n.cluster)
+clusters.rct
+```
+
+Updated total sample size assuming randomised cluster trial with ancova (baseline):
+
+```{r} 
+r <- (n.cluster*rho) / (1 + (n.cluster-1)*rho)
+
+N.rctbase <- ceiling(N.rct * (1 - r^2))
+N.rctbase
+clusters.rctbase <- ceiling(N.rctbase/n.cluster)
+clusters.rctbase
+``` 
+
+Sample size calculation for stepped wedge design:
+
+```{r} 
+k <- c(2,3,4)       # number of steps
+t <- 1              # number of measurements after each step
+b <- 1              # number of baseline measurements
+
+DE.sw <- ( (1 + rho*(k*t*n.cluster + b*n.cluster - 1))  / 
+             (1 + rho*(0.5*k*t*n.cluster + b*n.cluster - 1)) ) * 
+  ( (3*(1-rho)) / (2*t*(k-(1/k))) )
+N.sw <- ceiling(N * DE.sw)
+N.sw
+clusters.sw <- ceiling(N.sw/n.cluster)
+clusters.sw
+ 
+```
+
+So with two steps (excluding baseline) we need 8 clusters to get approximately 90% power to detect the size of effect we have specified.
+
+
+
+# Bibliography
+
+
+
+<!-- ### Ignore -->
+
+<!--  - just experimenting with some stop stuff. -->
+
+```{r, eval = F}
+
+# I <- 4                 # number of clusters
+# J <- 9                 # number of time points (excluding the baseline measurement)
+# K <- 84                # assumed average cluster size
+# rho <- 0.05            # assumed intra-class correlation
+# sig.level <- 0.05      # assumed significance level
+# which.var <- "within"
+# set.seed(278)
+# 
+# p1 <- 0.4 
+# p2 <- 0.2
+# betas <- compute_betas(p1, p2)
+# 
+# # X <- array(0, dim = c(I, J))
+# # X[1:2,c(2,4,5,6,8,9)] <- 1
+# # X[3:4,c(6,8,9)] <- 1
+# # X
+# X[1:2,c(1,2,3,4,5,6,7,8,9)] <- 1
+# X[3:4,c(6,7,8,9)] <- 1
+# X
+# 
+# dt <- make.swt2(I = I, J = J, K = K, 
+#                design = "cohort", 
+#                mu = betas[1], 
+#                b.trt = betas[2], 
+#                b.time = 0,
+#                sigma.y = NULL, sigma.e = NULL, rho = rho,
+#                sigma.a = NULL, rho.ind = 0.4, sigma.v = NULL,
+#                family = "binomial", 
+#                natural.scale = FALSE,
+#                X = X)
+# 
+# 
+# 
+# 
+# p1 <- 0.40 # baseline probability of the outcome in the control group
+# p2 <- 0.20
+# 
+# betas <- compute_betas(p1, p2)
+# 
+# b.trt <- betas[2]
+# 
+# I <- 4                 # number of clusters
+# J <- 2                 # number of time points (excluding the baseline measurement)
+# K <- 80                # assumed average cluster size
+# rho <- 0.05            # assumed intra-class correlation
+# sig.level <- 0.05      # assumed significance level
+# which.var <- "within"  # default implies sigma is for residual - 
+# 
+# # Note that natural.scale=TRUE implies that we are passing an odds ratio as b.trt
+# # in make.swt (responsible for making the datasets) the following line is 
+# # applied for natural.scale=TRUE
+# # OR <- b.trt. However, if natural.scale=FALSE then OR <- exp(b.trt).
+# 
+# pow.cont2 <- sim.power(I = I, J = J, K = K, design = "cohort", 
+#                       mu = p1, b.trt = or, 
+#                       b.time = 0,
+#                       sigma.y = NULL, sigma.e = NULL, rho = rho,
+#                       sigma.a = NULL, rho.ind = 0.4, sigma.v = NULL,
+#                       n.sims = 3000, formula = NULL, family = "binomial", 
+#                       natural.scale = TRUE, 
+#                       sig.level = 0.05, plot = F)
+# 
+# saveRDS(pow.cont2, "sim_2.RDS")
+# beepr::beep(4)          
+```
+
+
+<!-- ```{r generateBibliography, echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE} -->
+<!-- require("knitcitations") -->
+<!-- cleanbib() -->
+<!-- options("citation_format" = "pandoc") -->
+<!-- read.bibtex(file = "steppedwedge.bib") -->
+<!-- ``` -->
