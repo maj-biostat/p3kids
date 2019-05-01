@@ -191,7 +191,8 @@ results <- foreach(i = 1:mypars$nsim,
                    .packages=c("lme4", "data.table", "compiler", "sjstats")
                    #.options.snow=opts,
                    ) %dopar%{
- 
+                     
+  if(i %% 100 == 0) message("i = ", i)
   d <- gendat(mypars)
   l1 <- glmer(y ~ tx_active + (1|hosp_id/subj_id) , 
               data = d, family = binomial)
@@ -231,6 +232,7 @@ results <- foreach(i = 1:mypars$nsim,
                    #.options.snow=opts,
                    ) %dopar%{
  
+  if(i %% 100 == 0) message("i = ", i)
   d <- gendat()
   dsub <- data.table()
   for(j in mypars$t){
