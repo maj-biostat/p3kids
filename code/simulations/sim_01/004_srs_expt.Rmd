@@ -14,7 +14,6 @@ output:
     toc_depth: 3
     number_sections: true
     fig_caption: yes
-bibliography: steppedwedge.bib
 ---
 
 
@@ -114,7 +113,7 @@ summary(l1)$coef
 Simulation using full dataset.
 
 ```{r}
-nsim <- 2
+nsim <- 1000
 starttime <- Sys.time()
 cl <- makeCluster(parallel::detectCores() - 2, outfile="")
 registerDoParallel(cl)
