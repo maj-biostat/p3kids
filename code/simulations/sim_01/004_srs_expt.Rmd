@@ -86,7 +86,7 @@ gendat <- cmpfun(function(p0 = 0.45,
   hosp_int <- rnorm(n_hosp, 0, sig_hosp)
   l <- lapply(1:length(hosp_int), 
               function(x){ 
-                data.table(subj_int = rep(rnorm(n_subj, hosp_int[x], sig_subj), each = length(t)),
+                data.table(subj_int = rep(rnorm(n_subj, 0, sig_subj), each = length(t)),
                            hosp_int = hosp_int[x])
                 })
 
@@ -108,6 +108,36 @@ d <- gendat()
 l1 <- glmer(y ~ tx_active + (1|hosp_id/subj_id) , 
             data = d, family = binomial)
 summary(l1)$coef
+```
+
+Plot this single simulated dataset.
+
+```{r, echo = F, fig.height=6, fig.width=6}
+# produce proportion with event
+dfig <- d[, .(prop = mean(y)),
+          keyby = .(hosp_id, time, tx_active, tx_start)]
+
+# We have five timepoints measured. Just extrapolate the last one
+# by hosp and clinic
+dfig2 <- dfig[, .SD[.N], by=.(hosp_id)]
+dfig2$time <- 5
+dfig <- rbind(dfig, dfig2)
+
+# for the start lines
+ds1 <- data.table(hosp_id = 1:8,
+                  tx_start = rep(1:4, each = 2))
+                        
+ggplot(dfig, aes(x = time, y = prop, 
+                 group = paste0(hosp_id),
+                 colour = paste0(hosp_id)))+
+  geom_point(size = 0.4, alpha = 0.2) +
+  geom_step() +
+  scale_color_discrete("Hospital")+
+  scale_x_continuous("Years from start of study", lim = c(0, 5))+
+  scale_y_continuous("Proportion vaccinated", lim = c(0, 1), breaks = c(0, 0.5, 1)) +
+  facet_wrap(paste0("Start tx ", tx_start) ~ .) +
+  geom_vline(data = ds1, aes(xintercept = tx_start), linetype = 2)
+
 ```
 
 Simulation using full dataset.
