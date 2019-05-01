@@ -1,5 +1,5 @@
 ---
-title: "P3 Kids - power and sample size simulation"
+title: "P3 Kids - experiment look at whether we can use SRS cross-sectional approach"
 subtitle: "`r knitr::current_input(dir = TRUE)`"
 author: "Mark Jones"
 date: "`r Sys.time()`"
@@ -19,8 +19,7 @@ output:
 
 # Preamble
 
-Test whether you can turn a large dataset comprising clusters and subjects with repeat measures on the subjects into a cross-sectional dataset by simple random sampling.
-
+Test whether you can turn a large dataset comprising clusters and subjects with repeat measures on the subjects into a cross-sectional dataset by simple random sampling and still get reasonably good recovery of the parameters of interest.
 
 ```{r, echo = F}
 suppressPackageStartupMessages(library(compiler))
@@ -54,45 +53,61 @@ prob <- cmpfun(function(odd){
 
 ```
 
-
 # Data generation assumptions
 
 Eight clusters, each with 1000 subjects each of which have 5 observations.
 
+```{r}
+# parameters
+getpars <- function(){
+  pars <- list()
+  pars$p0 <- 0.45
+  pars$sig_hosp <- sqrt(0.1)
+  pars$sig_subj <- sqrt(0.6)
+  pars$t <- 0:4
+  pars$n_hosp <- 8
+  pars$n_subj <- 1000
+  pars$tx <- 0.7
+  pars
+}
+
+```
+
+
 
 ```{r, echo = T}
-gendat <- cmpfun(function(p0 = 0.45, 
-                          sig_hosp = sqrt(0.1),
-                          sig_subj = sqrt(1.77)){
-  # Timepoints
-  t <- 0:4
-  n_hosp <- 8
-  n_subj <- 1000
+gendat <- cmpfun(function(mypars){    # 1.77
   
   # this is a ridiculously big dataset
   # ids for patients in hospitals: sequential from 1 to hosp N
-  d0 <- data.table::CJ(1:n_hosp,
-                       1:n_subj,
-                       t)
+  d0 <- data.table::CJ(1:mypars$n_hosp,
+                       1:mypars$n_subj,
+                       mypars$t)
   names(d0) <- c("hosp_id", "subj_id", "time")
+  
+  d0$id <- interaction(d0$hosp_id, d0$subj_id)
 
   # baseline prob (grand mean)
-  d0$p0 <- p0
+  d0$p0 <- mypars$p0
   
-  ds <- data.frame(hosp_id = 1:8, tx_start = rep(1:4, each = 2))
+  ds <- data.frame(hosp_id = 1:mypars$n_hosp, 
+                   tx_start = rep(1:(mypars$n_hosp/2), each = 2))
   d0 <- merge(d0, ds, by = "hosp_id")
   d0$tx_active <- as.numeric(d0$time >= d0$tx_start)
   
-  hosp_int <- rnorm(n_hosp, 0, sig_hosp)
+  hosp_int <- rnorm(mypars$n_hosp, 0, mypars$sig_hosp)
   l <- lapply(1:length(hosp_int), 
               function(x){ 
-                data.table(subj_int = rep(rnorm(n_subj, 0, sig_subj), each = length(t)),
+                data.table(subj_int = 
+                             rep(rnorm(mypars$n_subj, 0, mypars$sig_subj),
+                                 each = length(mypars$t)),
                            hosp_int = hosp_int[x])
                 })
 
   d0 <- cbind(d0, rbindlist(l))
   
-  d0$eta <- log(odd(d0$p0)) + 0.7 * d0$tx_active + d0$hosp_int + d0$subj_int
+  d0$eta <- log(odd(d0$p0)) + mypars$tx * d0$tx_active + 
+    d0$hosp_int + d0$subj_int
   d0$p <- inv_logit(d0$eta)
   d0$y <- rbinom(nrow(d0), 1, prob = d0$p)
 
@@ -103,11 +118,30 @@ gendat <- cmpfun(function(p0 = 0.45,
 
 Generate data with selected parameter values. 
 
-```{r, echo = F}
-d <- gendat()
+```{r, echo = T}
+mypars <- getpars()
+d <- gendat(mypars)
 l1 <- glmer(y ~ tx_active + (1|hosp_id/subj_id) , 
             data = d, family = binomial)
-summary(l1)$coef
+summary(l1)
+sjstats::icc(l1, adjust = F)
+```
+
+
+```{r, echo = F}
+icc1 <- sjstats::icc(l1, adjust = F)
+dpar <- data.table(term = c("intercept", "trt", 
+                            "var_subj", "var_hosp"))
+dpar$true_val <- c(log(odd(mypars$p0)), mypars$tx, 
+                   mypars$sig_subj^2, mypars$sig_hosp^2)
+dpar$true_val <- round(dpar$true_val, 3)
+v <-  as.data.frame(VarCorr(l1))
+dpar$fit_val <- c(fixef(l1), v$vcov)
+dpar$fit_val <- round(dpar$fit_val, 3)
+
+dpar %>%
+  kable( col.names = c("Term", "True Value", "Fitted")) %>%
+  kable_styling(bootstrap_options = "striped", full_width = F)
 ```
 
 Plot this single simulated dataset.
@@ -124,8 +158,8 @@ dfig2$time <- 5
 dfig <- rbind(dfig, dfig2)
 
 # for the start lines
-ds1 <- data.table(hosp_id = 1:8,
-                  tx_start = rep(1:4, each = 2))
+ds1 <- data.table(hosp_id = 1:mypars$n_hosp,
+                  tx_start = rep(1:(mypars$n_hosp/2), each = 2))
                         
 ggplot(dfig, aes(x = time, y = prop, 
                  group = paste0(hosp_id),
@@ -142,12 +176,14 @@ ggplot(dfig, aes(x = time, y = prop,
 
 Simulation using full dataset.
 
-```{r}
-nsim <- 1000
+```{r, eval = F}
+nsim <- 2
 starttime <- Sys.time()
 cl <- makeCluster(parallel::detectCores() - 2, outfile="")
 registerDoParallel(cl)
 # registerDoSEQ()
+
+mypars <- getpars()
 
 results <- foreach(i = 1:nsim,
                    .errorhandling = 'pass',
@@ -156,7 +192,7 @@ results <- foreach(i = 1:nsim,
                    #.options.snow=opts,
                    ) %dopar%{
  
-  d <- gendat()
+  d <- gendat(mypars)
   l1 <- glmer(y ~ tx_active + (1|hosp_id/subj_id) , 
               data = d, family = binomial)
 
@@ -172,17 +208,21 @@ results <- foreach(i = 1:nsim,
 stopCluster(cl)
 endtime <- Sys.time()
 difftime(endtime, starttime, units = "hours")
-saveRDS(results, "res_expt1.RDS")
+rdsfilename <- paste0("res-expt1", 
+                      format(Sys.time(), "%Y-%m-%d-%H-%M-%S"), ".RDS")
+saveRDS(list(results = results,
+             mypars = mypars), rdsfilename)
 ```
 
 Simulation using dataset constructed with SRS.
 
-```{r}
+```{r, eval = F}
+nsim <- 2
 starttime <- Sys.time()
 cl <- makeCluster(parallel::detectCores() - 2, outfile="")
 registerDoParallel(cl)
 # registerDoSEQ()
-
+mypars <- getpars()
 results <- foreach(i = 1:nsim,
                    .errorhandling = 'pass',
                    #.export = c("inv_logit", "prob", "odd"),
@@ -192,10 +232,12 @@ results <- foreach(i = 1:nsim,
  
   d <- gendat()
   dsub <- data.table()
-  for(j in 0:4){
-    idxmax <- d[time == j, .N]
-    idx <- sample(1:idxmax, size = 150, replace = T)
-    dsub <- rbind(dsub, d[time == j, ][idx,])
+  for(j in mypars$t){
+    for(k in 1:mypars$n_hosp){
+      idxmax <- d[time == j & hosp_id == k, .N]
+      idx <- sample(1:idxmax, size = 250, replace = T)
+      dsub <- rbind(dsub, d[time == j & hosp_id == k, ][idx,])
+    }
   }
   
   # assumes that the samples are cross-sectional from srs
@@ -214,7 +256,45 @@ results <- foreach(i = 1:nsim,
 stopCluster(cl)
 endtime <- Sys.time()
 difftime(endtime, starttime, units = "hours")
-saveRDS(results, "res_expt2.RDS")
+rdsfilename <- paste0("res-expt2", 
+                      format(Sys.time(), "%Y-%m-%d-%H-%M-%S"), ".RDS")
+saveRDS(list(results = results,
+             mypars = mypars), rdsfilename)
 ```
 
 Now compare the results.
+
+```{r}
+results <- readRDS("res_expt2.RDS")
+results <- readRDS("res_expt1.RDS")
+dfig <- rbindlist(results)
+sum(dfig$value == 0)
+log(odd(0.45))
+
+# any with zero were singular
+dfig <- dfig[value != 0]
+sum(dfig$value == 0)
+nrow(dfig)
+dfig[1:10, ]
+
+dtest <- dfig[Var1 == "(Intercept)" & Var2 == "Estimate",]
+dtest <- dfig[Var1 == "tx_active" & Var2 == "Estimate",]
+dtest <- dfig[Var1 == "hosp_id" & Var2 == "vcov",]
+nrow(dtest)
+
+mean(dtest$value)
+sd(dtest$value)
+plot(density(dtest$value))
+
+
+```
+
+
+
+
+References
+
+For nested effects.
+https://www.muscardinus.be/2017/07/lme4-random-effects/
+
+
