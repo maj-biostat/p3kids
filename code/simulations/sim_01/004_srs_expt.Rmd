@@ -68,6 +68,7 @@ getpars <- function(){
   pars$n_hosp <- 8
   pars$n_subj <- 1000
   pars$tx <- 0.7
+  pars$nsim <- 2
   pars
 }
 
@@ -177,7 +178,6 @@ ggplot(dfig, aes(x = time, y = prop,
 Simulation using full dataset.
 
 ```{r, eval = F}
-nsim <- 2
 starttime <- Sys.time()
 cl <- makeCluster(parallel::detectCores() - 2, outfile="")
 registerDoParallel(cl)
@@ -185,7 +185,7 @@ registerDoParallel(cl)
 
 mypars <- getpars()
 
-results <- foreach(i = 1:nsim,
+results <- foreach(i = 1:mypars$nsim,
                    .errorhandling = 'pass',
                    #.export = c("inv_logit", "prob", "odd"),
                    .packages=c("lme4", "data.table", "compiler", "sjstats")
@@ -208,22 +208,23 @@ results <- foreach(i = 1:nsim,
 stopCluster(cl)
 endtime <- Sys.time()
 difftime(endtime, starttime, units = "hours")
-rdsfilename <- paste0("res-expt1", 
+rdsfilename <- paste0("res-expt1-", 
                       format(Sys.time(), "%Y-%m-%d-%H-%M-%S"), ".RDS")
 saveRDS(list(results = results,
-             mypars = mypars), rdsfilename)
+             mypars = mypars, 
+             starttime = starttime,
+             endtime = endtime ), rdsfilename)
 ```
 
 Simulation using dataset constructed with SRS.
 
 ```{r, eval = F}
-nsim <- 2
 starttime <- Sys.time()
 cl <- makeCluster(parallel::detectCores() - 2, outfile="")
 registerDoParallel(cl)
 # registerDoSEQ()
 mypars <- getpars()
-results <- foreach(i = 1:nsim,
+results <- foreach(i = 1:mypars$nsim,
                    .errorhandling = 'pass',
                    #.export = c("inv_logit", "prob", "odd"),
                    .packages=c("lme4", "data.table", "compiler", "sjstats")
@@ -256,10 +257,12 @@ results <- foreach(i = 1:nsim,
 stopCluster(cl)
 endtime <- Sys.time()
 difftime(endtime, starttime, units = "hours")
-rdsfilename <- paste0("res-expt2", 
+rdsfilename <- paste0("res-expt2-", 
                       format(Sys.time(), "%Y-%m-%d-%H-%M-%S"), ".RDS")
 saveRDS(list(results = results,
-             mypars = mypars), rdsfilename)
+             mypars = mypars, 
+             starttime = starttime,
+             endtime = endtime ), rdsfilename)
 ```
 
 Now compare the results.
