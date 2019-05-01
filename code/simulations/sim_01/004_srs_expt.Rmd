@@ -177,7 +177,7 @@ ggplot(dfig, aes(x = time, y = prop,
 
 Simulation using full dataset.
 
-```{r, eval = F}
+```{r, eval = T}
 starttime <- Sys.time()
 cl <- makeCluster(parallel::detectCores() - 2, outfile="")
 registerDoParallel(cl)
@@ -218,7 +218,7 @@ saveRDS(list(results = results,
 
 Simulation using dataset constructed with SRS.
 
-```{r, eval = F}
+```{r, eval = T}
 starttime <- Sys.time()
 cl <- makeCluster(parallel::detectCores() - 2, outfile="")
 registerDoParallel(cl)
@@ -267,7 +267,7 @@ saveRDS(list(results = results,
 
 Now compare the results.
 
-```{r}
+```{r, eval = F}
 results <- readRDS("res_expt2.RDS")
 results <- readRDS("res_expt1.RDS")
 dfig <- rbindlist(results)
