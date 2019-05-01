@@ -1,0 +1,191 @@
+---
+title: "P3 Kids - power and sample size simulation"
+subtitle: "`r knitr::current_input(dir = TRUE)`"
+author: "Mark Jones"
+date: "`r Sys.time()`"
+editor_options:
+  chunk_output_type: console
+output:
+  html_document:
+    theme: united
+    toc: yes
+  pdf_document:
+    toc: yes
+    toc_depth: 3
+    number_sections: true
+    fig_caption: yes
+bibliography: steppedwedge.bib
+---
+
+
+# Preamble
+
+Test whether you can turn a large dataset comprising clusters and subjects with repeat measures on the subjects into a cross-sectional dataset by simple random sampling.
+
+
+```{r, echo = F}
+suppressPackageStartupMessages(library(compiler))
+suppressPackageStartupMessages(library(data.table))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(knitr))
+suppressPackageStartupMessages(library(kableExtra))
+suppressPackageStartupMessages(library(lme4))
+suppressPackageStartupMessages(library(doParallel))
+suppressPackageStartupMessages(library(foreach))
+
+ggplot2::theme_set(ggplot2::theme_bw())
+ggplot2::theme_update(text = element_text(size = 10))
+ggplot2::theme_update(legend.position = "top")
+# ggplot2::theme_update(legend.title = element_blank())
+ggplot2::theme_update(axis.text.x = element_text(size = 10))
+ggplot2::theme_update(axis.text.y = element_text(size = 10))
+
+
+var_e <- (pi^2)/3
+
+inv_logit <- cmpfun(function(x){
+  return(exp(x)/(1+exp(x)))
+})
+odd <- cmpfun(function(p){
+  return(p/(1-p))
+})
+prob <- cmpfun(function(odd){
+  return(odd/(1+odd))
+})
+
+```
+
+
+# Data generation assumptions
+
+Eight clusters, each with 1000 subjects each of which have 5 observations.
+
+
+```{r, echo = T}
+gendat <- cmpfun(function(p0 = 0.45, 
+                          sig_hosp = sqrt(0.1),
+                          sig_subj = sqrt(1.77)){
+  # Timepoints
+  t <- 0:4
+  n_hosp <- 8
+  n_subj <- 1000
+  
+  # this is a ridiculously big dataset
+  # ids for patients in hospitals: sequential from 1 to hosp N
+  d0 <- data.table::CJ(1:n_hosp,
+                       1:n_subj,
+                       t)
+  names(d0) <- c("hosp_id", "subj_id", "time")
+
+  # baseline prob (grand mean)
+  d0$p0 <- p0
+  
+  ds <- data.frame(hosp_id = 1:8, tx_start = rep(1:4, each = 2))
+  d0 <- merge(d0, ds, by = "hosp_id")
+  d0$tx_active <- as.numeric(d0$time >= d0$tx_start)
+  
+  hosp_int <- rnorm(n_hosp, 0, sig_hosp)
+  l <- lapply(1:length(hosp_int), 
+              function(x){ 
+                data.table(subj_int = rep(rnorm(n_subj, hosp_int[x], sig_subj), each = length(t)),
+                           hosp_int = hosp_int[x])
+                })
+
+  d0 <- cbind(d0, rbindlist(l))
+  
+  d0$eta <- log(odd(d0$p0)) + 0.7 * d0$tx_active + d0$hosp_int + d0$subj_int
+  d0$p <- inv_logit(d0$eta)
+  d0$y <- rbinom(nrow(d0), 1, prob = d0$p)
+
+  d0
+})
+
+```
+
+Generate data with selected parameter values. 
+
+```{r, echo = F}
+d <- gendat()
+l1 <- glmer(y ~ tx_active + (1|hosp_id/subj_id) , 
+            data = d, family = binomial)
+summary(l1)$coef
+```
+
+Simulation using full dataset.
+
+```{r}
+nsim <- 2
+starttime <- Sys.time()
+cl <- makeCluster(parallel::detectCores() - 2, outfile="")
+registerDoParallel(cl)
+# registerDoSEQ()
+
+results <- foreach(i = 1:nsim,
+                   .errorhandling = 'pass',
+                   #.export = c("inv_logit", "prob", "odd"),
+                   .packages=c("lme4", "data.table", "compiler", "sjstats")
+                   #.options.snow=opts,
+                   ) %dopar%{
+ 
+  d <- gendat()
+  l1 <- glmer(y ~ tx_active + (1|hosp_id/subj_id) , 
+              data = d, family = binomial)
+
+  if(sjstats::is_singular(l1)){
+    return(data.table(idsim = i, Var1 =0,Var2 =0,value=0))
+  }
+  
+  m1 <- data.table::melt(summary(l1)$coef[,1:2])
+  m2 <- data.table::melt(as.data.frame(VarCorr(l1))[,c(1,4)], id.vars = "grp" )
+  cbind(id = i, rbindlist(list(m1, m2)))
+}
+
+stopCluster(cl)
+endtime <- Sys.time()
+difftime(endtime, starttime, units = "hours")
+saveRDS(results, "res_expt1.RDS")
+```
+
+Simulation using dataset constructed with SRS.
+
+```{r}
+starttime <- Sys.time()
+cl <- makeCluster(parallel::detectCores() - 2, outfile="")
+registerDoParallel(cl)
+# registerDoSEQ()
+
+results <- foreach(i = 1:nsim,
+                   .errorhandling = 'pass',
+                   #.export = c("inv_logit", "prob", "odd"),
+                   .packages=c("lme4", "data.table", "compiler", "sjstats")
+                   #.options.snow=opts,
+                   ) %dopar%{
+ 
+  d <- gendat()
+  dsub <- data.table()
+  for(j in 0:4){
+    idxmax <- d[time == j, .N]
+    idx <- sample(1:idxmax, size = 150, replace = T)
+    dsub <- rbind(dsub, d[time == j, ][idx,])
+  }
+  
+  # assumes that the samples are cross-sectional from srs
+  l1 <- glmer(y ~ tx_active + (1|hosp_id) , 
+              data = dsub, family = binomial)
+
+  if(sjstats::is_singular(l1)){
+    return(data.table(idsim = i, Var1 =0,Var2 =0,value=0))
+  }
+  
+  m1 <- data.table::melt(summary(l1)$coef[,1:2])
+  m2 <- data.table::melt(as.data.frame(VarCorr(l1))[,c(1,4)], id.vars = "grp" )
+  cbind(id = i, rbindlist(list(m1, m2)))
+}
+
+stopCluster(cl)
+endtime <- Sys.time()
+difftime(endtime, starttime, units = "hours")
+saveRDS(results, "res_expt2.RDS")
+```
+
+Now compare the results.
