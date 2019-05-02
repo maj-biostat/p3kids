@@ -66,10 +66,11 @@ getpars <- function(){
   pars$sig_subj <- sqrt(0.6)
   pars$t <- 0:4
   pars$n_hosp <- 8
-  pars$n_subj <- 5000
+  pars$n_subj <- 1000
   pars$tx <- 0.7
-  pars$nsim <- 1000
+  pars$nsim <- 5000
   pars$cluster_size <- 400
+  pars$seed <- 1000000
   pars
 }
 
@@ -178,7 +179,7 @@ ggplot(dfig, aes(x = time, y = prop,
 
 Simulation using full dataset.
 
-```{r, eval = F}
+```{r, eval = T}
 starttime <- Sys.time()
 cl <- makeCluster(parallel::detectCores() - 2, outfile="")
 registerDoParallel(cl)
@@ -192,6 +193,8 @@ results <- foreach(i = 1:mypars$nsim,
                    .packages=c("lme4", "data.table", "compiler", "sjstats")
                    #.options.snow=opts,
                    ) %dopar%{
+                     
+                     set.seed(i + mypars$seed)
                      
   if(i %% 100 == 0) message("i = ", i)
   d <- gendat(mypars)
@@ -221,7 +224,7 @@ saveRDS(list(results = results,
 
 Simulation using dataset constructed with SRS.
 
-```{r, eval = F}
+```{r, eval = T}
 starttime <- Sys.time()
 cl <- makeCluster(parallel::detectCores() - 2, outfile="")
 registerDoParallel(cl)
@@ -233,6 +236,8 @@ results <- foreach(i = 1:mypars$nsim,
                    .packages=c("lme4", "data.table", "compiler", "sjstats")
                    #.options.snow=opts,
                    ) %dopar%{
+                     
+                     set.seed(i + mypars$seed)
  
   if(i %% 100 == 0) message("i = ", i)
   d <- gendat(mypars)
