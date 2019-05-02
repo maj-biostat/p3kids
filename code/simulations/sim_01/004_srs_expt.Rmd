@@ -66,9 +66,10 @@ getpars <- function(){
   pars$sig_subj <- sqrt(0.6)
   pars$t <- 0:4
   pars$n_hosp <- 8
-  pars$n_subj <- 1000
+  pars$n_subj <- 5000
   pars$tx <- 0.7
-  pars$nsim <- 2
+  pars$nsim <- 1000
+  pars$cluster_size <- 400
   pars
 }
 
@@ -177,7 +178,7 @@ ggplot(dfig, aes(x = time, y = prop,
 
 Simulation using full dataset.
 
-```{r, eval = T}
+```{r, eval = F}
 starttime <- Sys.time()
 cl <- makeCluster(parallel::detectCores() - 2, outfile="")
 registerDoParallel(cl)
@@ -202,7 +203,8 @@ results <- foreach(i = 1:mypars$nsim,
   }
   
   m1 <- data.table::melt(summary(l1)$coef[,1:2])
-  m2 <- data.table::melt(as.data.frame(VarCorr(l1))[,c(1,4)], id.vars = "grp" )
+  m2 <- data.table::melt(as.data.frame(VarCorr(l1))[,c(1,4)], 
+                         id.vars = "grp" )
   cbind(id = i, rbindlist(list(m1, m2)))
 }
 
@@ -219,7 +221,7 @@ saveRDS(list(results = results,
 
 Simulation using dataset constructed with SRS.
 
-```{r, eval = T}
+```{r, eval = F}
 starttime <- Sys.time()
 cl <- makeCluster(parallel::detectCores() - 2, outfile="")
 registerDoParallel(cl)
@@ -233,18 +235,23 @@ results <- foreach(i = 1:mypars$nsim,
                    ) %dopar%{
  
   if(i %% 100 == 0) message("i = ", i)
-  d <- gendat()
+  d <- gendat(mypars)
   dsub <- data.table()
-  for(j in mypars$t){
-    for(k in 1:mypars$n_hosp){
-      idxmax <- d[time == j & hosp_id == k, .N]
-      idx <- sample(1:idxmax, size = 250, replace = T)
-      dsub <- rbind(dsub, d[time == j & hosp_id == k, ][idx,])
+  for(k in 1:mypars$n_hosp){
+    subjs <- d[hosp_id == k & time == 0, subj_id]
+    idx <- sample(1:length(subjs), 
+                  size = mypars$cluster_size, 
+                  replace = T)
+
+    for(z in mypars$t){
+      dsub <- rbind(dsub, d[hosp_id == k & time == z, ][idx,])
     }
+    
   }
+
   
   # assumes that the samples are cross-sectional from srs
-  l1 <- glmer(y ~ tx_active + (1|hosp_id) , 
+  l1 <- glmer(y ~ tx_active + (1|hosp_id/subj_id) , 
               data = dsub, family = binomial)
 
   if(sjstats::is_singular(l1)){
@@ -252,7 +259,8 @@ results <- foreach(i = 1:mypars$nsim,
   }
   
   m1 <- data.table::melt(summary(l1)$coef[,1:2])
-  m2 <- data.table::melt(as.data.frame(VarCorr(l1))[,c(1,4)], id.vars = "grp" )
+  m2 <- data.table::melt(as.data.frame(VarCorr(l1))[,c(1,4)], 
+                         id.vars = "grp" )
   cbind(id = i, rbindlist(list(m1, m2)))
 }
 
@@ -267,34 +275,67 @@ saveRDS(list(results = results,
              endtime = endtime ), rdsfilename)
 ```
 
-Now compare the results.
-
-```{r, eval = F}
-results <- readRDS("res_expt2.RDS")
-results <- readRDS("res_expt1.RDS")
-dfig <- rbindlist(results)
-sum(dfig$value == 0)
-log(odd(0.45))
-
-# any with zero were singular
-dfig <- dfig[value != 0]
-sum(dfig$value == 0)
-nrow(dfig)
-dfig[1:10, ]
-
-dtest <- dfig[Var1 == "(Intercept)" & Var2 == "Estimate",]
-dtest <- dfig[Var1 == "tx_active" & Var2 == "Estimate",]
-dtest <- dfig[Var1 == "hosp_id" & Var2 == "vcov",]
-nrow(dtest)
-
-mean(dtest$value)
-sd(dtest$value)
-plot(density(dtest$value))
 
 
+```{r, eval = F, echo = F}
+fnames <- c("out/res-expt1-2019-05-02-04-01-09.RDS",
+            "out/res-expt2-2019-05-02-10-40-17.RDS")
+
+lres <- vector("list", length(fnames))
+for(z in 1:length(fnames)){
+  res <- readRDS(fnames[z])
+  dfig <- rbindlist(lapply(1:1000, function(x) res$results[[x]]))
+  lres[[z]]$n_singular <- sum(dfig$value == 0)
+  dtab <- dfig[value != 0][, mean(value), by = .(Var1, Var2)]
+  
+  lres[[z]]$intercept <- sprintf("%.3f (%.3f)", 
+                                 dtab[Var1 == "(Intercept)" & 
+                                        Var2 == "Estimate", V1],
+                                 dtab[Var1 == "(Intercept)" & 
+                                        Var2 == "Std. Error", V1])
+  
+  lres[[z]]$tx_active <- sprintf("%.3f (%.3f)", 
+                                 dtab[Var1 == "tx_active" & 
+                                        Var2 == "Estimate", V1],
+                                 dtab[Var1 == "tx_active" & 
+                                        Var2 == "Std. Error", V1])
+  
+  lres[[z]]$tx_active <- sprintf("%.3f (%.3f)", 
+                                 dtab[Var1 == "tx_active" & 
+                                        Var2 == "Estimate", V1],
+                                 dtab[Var1 == "tx_active" & 
+                                        Var2 == "Std. Error", V1])
+  
+  lres[[z]]$subj_id <- sprintf("%.3f", 
+                                 dtab[Var1 == "subj_id:hosp_id" & 
+                                        Var2 == "vcov", V1])
+  
+  lres[[z]]$hosp_id <- sprintf("%.3f", 
+                                 dtab[Var1 == "hosp_id" & 
+                                        Var2 == "vcov", V1])
+  
+}
+
+dtab <- rbindlist(lres)
 ```
 
+Now compare the results. The following table suggests that the approach is probably reasonable.
 
+```{r, eval = F}
+dpar <- data.table(term = c("intercept", "trt", 
+                            "var_subj", "var_hosp"))
+dpar$true_val <- c(log(odd(mypars$p0)), mypars$tx, 
+                   mypars$sig_subj^2, mypars$sig_hosp^2)
+dpar$true_val <- round(dpar$true_val, 3)
+
+dpar$fit_val_dat_all <- as.matrix(dtab[1, 2:5])[1,]
+dpar$fit_val_dat_sub <- as.matrix(dtab[2, 2:5])[1,]
+
+dpar %>%
+  kable( col.names = c("Term", "True Value", 
+                       "Fitted (all)", "Fitted (subset)")) %>%
+  kable_styling(bootstrap_options = "striped", full_width = F)
+```
 
 
 References
