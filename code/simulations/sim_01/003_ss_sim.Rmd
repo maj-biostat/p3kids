@@ -370,7 +370,7 @@ results <- foreach(i = 1:nsim,
             return(NA)
         })
     
-    if(is.na(l1) | sjstats::is_singular(l1) | !sjstats::converge_ok(l1)){
+    if(is.na(l1) | sjstats::is_singular(l1)){
       sing <- sjstats::is_singular(l1)
       lres[[j]] <- data.table(simid = i, parid = j, 
                               singular = sing, est = NA, 
