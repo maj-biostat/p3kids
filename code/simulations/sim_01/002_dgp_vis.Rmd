@@ -1,0 +1,565 @@
+---
+title: "P3 Kids - data generation process"
+subtitle: "`r knitr::current_input(dir = TRUE)`"
+author: "Mark Jones"
+date: "`r Sys.time()`"
+editor_options:
+  chunk_output_type: console
+output:
+  html_document:
+    theme: united
+    toc: yes
+  pdf_document:
+    toc: yes
+    toc_depth: 3
+    number_sections: true
+    fig_caption: yes
+bibliography: steppedwedge.bib
+---
+
+
+# Preamble
+
+This document is about model specification and visualisation.
+
+# Todo
+
+Use this approach to generate data then model and assess:
+
+
+1. icc 
+2. implication for correlation between measures
+3. model non-linear calendar time effect
+4. model non-linear exposure time effect
+
+See @Thompson2018 chapter 3. Includes:
+
++ random effect for cluster-period interactions
++ random effect for each period
++ intervention lag and wane
++ random intervention model
+
+
+```{r, echo = F}
+suppressPackageStartupMessages(library(compiler))
+suppressPackageStartupMessages(library(data.table))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(knitr))
+suppressPackageStartupMessages(library(kableExtra))
+suppressPackageStartupMessages(library(lme4))
+suppressPackageStartupMessages(library(doParallel))
+suppressPackageStartupMessages(library(foreach))
+
+ggplot2::theme_set(ggplot2::theme_bw())
+ggplot2::theme_update(text = element_text(size = 10))
+ggplot2::theme_update(legend.position = "top")
+# ggplot2::theme_update(legend.title = element_blank())
+ggplot2::theme_update(axis.text.x = element_text(size = 10))
+ggplot2::theme_update(axis.text.y = element_text(size = 10))
+
+
+var_e <- (pi^2)/3
+
+inv_logit <- cmpfun(function(x){
+  return(exp(x)/(1+exp(x)))
+})
+odd <- cmpfun(function(p){
+  return(p/(1-p))
+})
+prob <- cmpfun(function(odd){
+  return(odd/(1+odd))
+})
+```
+
+# Model Specification
+
+This follows Nickless 2018. The preferred model specification for a stepped wedge design with multiple levels of clustering.
+
+\begin{aligned}
+\text{logit}\{\pi_{kjit}\} &= \beta_0 + \kappa_t + \xi_d + \gamma_{0kji} + e_{kjit} \\
+\gamma_{0kji} &= \theta_{0k} + \phi_{0kj} + \nu_{0kji}   
+\end{aligned}
+
+```{r, echo = F, eval = T}
+d <- data.frame(var = c("$i$",
+                        "$t$",
+                        "$j$",
+                        "$k$",
+                        "$d_{tk}$",
+                        "$\\pi_{ijkt}$",
+                        "$x_{kt}$",
+                        "$\\beta_0$",
+                        "$\\kappa_t$",
+                        "$\\xi_d$",
+                        "$\\gamma_{0k}$",
+                        "$\\theta_{0k}$",
+                        "$\\phi_{0kj}$",
+                        "$\\nu_{0kji}$"),
+                desc = c("Participant",
+                         "Timestep (discrete)",
+                         "Clinic",
+                         "Cluster",
+                         "Duration exposed to intervention at time $t$ in cluster $k$",
+                         "Probability of event for participant $i$ at time $t$ in cluster $k$",
+                         "Indicator for whether $k$ is under intervention at time $t$",
+                         "Intercept (baseline log odds)",
+                         "Coefficients of binary indicator for discrete time",
+                         "Coefficient for effect of $d$ time steps of exposure to intervention",
+                         "Combined random cluster effects with mean 0, var $\\sigma^2_{\\gamma}$",
+                         "Hospital random intercept",
+                         "Clinic random intercept",
+                         "Person random intercept")
+                )
+
+kable(d,
+      caption = "Table 1. Summary of notation",
+      col.names = NULL, escape=FALSE) %>%
+  kable_styling(protect_latex = TRUE, 
+                bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = F, position = "left",
+                font_size = 12,
+                latex_options = "hold_position") %>%
+  column_spec(1, width = "1.5cm", bold = F, italic = F)%>%
+  column_spec(2, width = "12cm", bold = F, italic = F)
+
+```
+
+The $\kappa_t = (0, \kappa_2, \kappa_3, \dots,\kappa_T)$ allows a different time effect at each time step and therefore permits non-linear secular trends. Note, the same change over time is assumed for all clusters. 
+
+The $\xi_d$ is the intervention effect for each level of the exposure (this makes including a term for the intervention redundant). 
+
+The $\beta_1$ can be interpreted as a time-averaged intervention effect.
+
+
+# Simulate Data
+
+```{r, echo = F}
+# parameters
+getpars <- cmpfun(function(hosp_name = c("pch", "rcmel", "monch", 
+                                         "westmdcs", "sydch", "qch", 
+                                         "wchade", "rdarwh"),
+                           hosp_size = c(100, 110, 120, 110, 130, 90, 80, 50),
+                           n_hosp_grp = 2,
+                    sig_hosp = sqrt(0.1),
+                    sig_clin = sqrt(0.1),
+                    sig_subj = sqrt(0.6),
+                    p0 = 0.45,
+                    tx = 0.7,
+                    sec_trend = 0.05,
+                    exp_trend = 0.0,
+                    nsim = 1000){
+
+  lpar <- vector("list", 3)
+  
+  # hospitals
+  hosp_name <- hosp_name
+  #hosp_size <- c(1000, 1100, 1200, 1100, 1300, 900, 800, 500)
+  
+
+  if(length(hosp_size) == 1){
+    hosp_size <- rep(hosp_size, length(hosp_name))
+  } 
+  stopifnot(length(hosp_size) == length(hosp_name))
+  
+  
+  prop_clinic <- c(0.1, 0.15, 0.2, 0.2, 0.35)
+  lhosps <- list()
+  for(i in 1:length(hosp_name)){
+    
+    z = 0
+    clin_size = rmultinom(1, hosp_size[i], prop_clinic)
+    while(any(clin_size == 0)){
+      z <- z + 1
+      clin_size = rmultinom(1, hosp_size[i], prop_clinic)
+      stopifnot(z < 9)
+    }
+    
+    l <- list(name = hosp_name[i],
+              N = hosp_size[i],
+              clin_size = clin_size)
+    lhosps[[i]] <- l
+  }
+  # randomise order
+  idx_permute <- sample(1:length(hosp_name), 
+                        size = length(hosp_name), 
+                        replace = F)
+  lhosps <- lapply(idx_permute, function(x) lhosps[[x]])
+  names(lhosps) <- hosp_name[idx_permute]
+  lpar[[1]] <- lhosps
+  
+  # global parameters
+  pars <- list()
+  pars$hosp_name <- hosp_name[idx_permute]
+  pars$hosp_size <- hosp_size[idx_permute]
+  pars$n_hosp <- length(hosp_name)
+  pars$n_hosp_grp <- n_hosp_grp
+  pars$n_clin <- length(prop_clinic)
+  pars$n_subj_tot <- sum(unlist(lapply(1:pars$n_hosp, 
+                                  function(x) 
+                                    sum(lhosps[[x]]$clin_size))))
+  pars$sig_hosp <- sig_hosp
+  pars$sig_clin <- sig_clin
+  pars$sig_subj <- sig_subj
+  pars$p0 <- p0
+  pars$t <- 0:4
+  pars$n_obs <- length(pars$t)*pars$n_subj_tot
+  pars$tx <- tx
+  pars$sec_trend <- sec_trend
+  pars$exp_trend <- exp_trend
+  pars$nsim <- nsim
+  pars$seed <- 1000000
+  pars$z <- z
+  lpar[[2]] <- pars
+  
+  tx_start <- data.frame(hosp_id = 1:pars$n_hosp, 
+                       tx_start = rep(1:(pars$n_hosp/pars$n_hosp_grp), 
+                                      each = pars$n_hosp_grp))
+  
+  lpar[[3]] <- tx_start
+  
+  names(lpar) <- c("hosps", "pars", "tx_start")
+  
+  lpar
+})
+mypars <- getpars()
+```
+
+The study runs from start of 2020 to the end of 2024. We can observe the proportion vaccinated in October each year. We will have measurements for the proportion vac in the baseline year and at the end of each step in the stepped wedge.
+
+```{r, echo = T}
+gendat <- cmpfun(function(mypars){    # 1.77
+  
+  
+  # hospital, clinic, person, time
+  hosp_int <- rnorm(mypars$pars$n_hosp, 0, mypars$pars$sig_hosp)
+  clin_int <- rnorm(mypars$pars$n_hosp*mypars$pars$n_clin, 0, mypars$pars$sig_clin)
+  subj_int <- rnorm(mypars$pars$n_subj_tot, 0, mypars$pars$sig_subj)
+  
+  l <- lapply(1:mypars$pars$n_hosp, function(x){
+    lapply(1:mypars$pars$n_clin, function(y){
+      data.table::CJ(x,
+                     mypars$hosps[[x]]$name,
+                     y,
+                     1:mypars$hosps[[x]]$clin_size[y],
+                     mypars$pars$t,
+                     hosp_int[x],
+                     clin_int[y+y*(x-1)])
+    })
+  })
+  d0 <- rbindlist(lapply(l, rbindlist))
+  
+  if(nrow(d0)==3960){
+    stop()
+  }
+  
+  d0$subj_int <- rep(subj_int, each = length(mypars$pars$t))
+  
+  names(d0) <- c("hosp_id", "hosp", "clin_id", "subj_id", 
+                 "time", "hosp_int", "clin_int", "subj_int")
+
+  # unique id for each patient
+  d0$id <- interaction(d0$hosp_id, d0$clin_id, d0$subj_id)
+
+  # baseline prob (grand mean)
+  d0$p0 <- mypars$pars$p0
+  
+  # tx
+  
+  d0 <- merge(d0, mypars$tx_start, by = "hosp_id")
+  d0$tx_active <- as.numeric(d0$time >= d0$tx_start)
+  
+  # calendar trends
+  d0$k1 <- as.numeric(d0$time == 1)
+  d0$k2 <- as.numeric(d0$time == 2)
+  d0$k3 <- as.numeric(d0$time == 3)
+  d0$k4 <- as.numeric(d0$time == 4)
+  
+  setorder(d0, hosp_id, clin_id, subj_id, time)
+  
+  # exposure trends
+  d0$tx_durn <- ave(d0$tx_active, d0$hosp_id, d0$clin_id, d0$subj_id, FUN=cumsum)
+  d0$tx1 <- as.numeric(d0$tx_durn == 1)
+  d0$tx2 <- as.numeric(d0$tx_durn == 2)
+  d0$tx3 <- as.numeric(d0$tx_durn == 3)
+  d0$tx4 <- as.numeric(d0$tx_durn == 4)
+
+  d0
+})
+
+```
+
+
+# Variance components - impact on probability of vaccination
+
+The main problem we will face is that of reliably recovering variance components with so few clusters. We will need to comment on this and caveat any interpretation. Nevertheless, one potential use of gaining an understanding of the variance components would be to identify at what level the greatest variability lies. If the variability between hospitals is greater than the variability between clinics it would suggest targetting hospitals with low vac rates rather than individual clinics.
+
+Hospital level vaccination rates also represent distinct levels at which the causal processes affecting vaccination uptake occur. So, while greater variation at the hospital level perhaps implies broader cultural influences, the dominance of clinic level would suggest administrative or patient-centric factors.
+
+Note that as well as hospital and clinic random effects, each person has their own intercept and therefore their observations are clustered.
+
+Note to self - from @@Moineddin2007 the random intercept parameters associated with desired correlation. Recall residual variance in logistic is $\sigma_e^2 = \pi^2/3$. Also refer to stepped wedge PhD by Dan Barker. 
+
+```{r, echo = F, eval = F}
+
+# from @@Moineddin2007
+
+# return icc for given var (unconditional rand intercept)
+iccme <- function(u){e <- (pi^2)/3; round(u / (u + e), 3)}
+# variances 
+u <- c(0.13, 0.67, 2)
+lapply(u, iccme)
+
+# return var for given icc
+varme <- function(rho){e <- (pi^2)/3; (e*rho)/(1-rho)}
+u <- c(0.01, 0.2)
+lapply(u, varme)
+```
+
+```{r, echo = F, eval = F}
+
+# from dan bakers phd
+# Solving the equations in D barkers phd for variance 
+# components. It's tedious but...
+# cluster level variance
+var_k <- function(rho2, rho3){
+  ((pi^2)/3) * (rho3*rho2/(rho2-rho3))
+}
+# subject level
+var_i <- function(rho2, rho3){
+  ((pi^2)/3) * (rho3*rho2/(rho2-rho3)) * ((1/rho2)-1)
+}
+
+rho2 <- 0.5
+rho3 <- 0.05
+vark <- var_k(rho2, rho3)
+vari <- var_i(rho2, vark)
+c(vari, vark)
+
+```
+
+Subject level variation.
+
+```{r, echo = T}
+mypars <- getpars(sig_hosp = 0.0,
+            sig_clin = 0.0,
+            sig_subj = sqrt(0.822467))
+d <- gendat(mypars)
+d$eta <- log(odd(d$p0)) +
+  d$hosp_int +
+  d$clin_int +
+  d$subj_int 
+d$p <- inv_logit(d$eta)
+d$y <- rbinom(nrow(d), 1, prob = d$p)
+```
+
+```{r, echo = F}
+ggplot(d, aes(x = time, y = p, colour = paste0(hosp_id)))+
+  geom_jitter(size = 0.4, alpha = 1, width = 0.1, height=0) +
+  geom_hline(aes(yintercept = p0), lty = 2)+
+  scale_colour_discrete(paste0("Hospital"))+
+  scale_x_continuous("Years from start of study", lim = c(-1, 5))+
+  scale_y_continuous("Proportion vaccinated", lim = c(0, 1), breaks = c(0, 0.5, 1)) +
+  facet_grid(paste0("Start tx ", tx_start) ~ paste0("Clinic ", clin_id))
+```
+
+Clinic level variation.
+
+```{r, echo = F}
+
+# No random effects just look at the baseline prob of vax
+# small num of people in each clinic so that we can see what is going on.
+
+mypars <- getpars(sig_hosp = 0.0,
+            sig_clin = sqrt(0.1),
+            sig_subj = 0)
+d <- gendat(mypars)
+d$eta <- log(odd(d$p0)) +
+  d$hosp_int +
+  d$clin_int +
+  d$subj_int 
+d$p <- inv_logit(d$eta)
+d$y <- rbinom(nrow(d), 1, prob = d$p)
+```
+
+```{r, echo = F}
+
+ggplot(d, aes(x = time, y = p, colour = paste0(hosp_id)))+
+  geom_jitter(size = 0.4, alpha = 1, width = 0.1, height=0) +
+  geom_hline(aes(yintercept = p0), lty = 2)+
+  scale_colour_discrete(paste0("Hospital"))+
+  scale_x_continuous("Years from start of study", lim = c(-1, 5))+
+  scale_y_continuous("Proportion vaccinated", lim = c(0, 1), breaks = c(0, 0.5, 1)) +
+  facet_grid(paste0("Start tx ", tx_start) ~ paste0("Clinic ", clin_id))
+```
+
+Hospital level variation.
+
+```{r, echo = F}
+
+mypars <- getpars(sig_hosp = sqrt(0.1),
+            sig_clin = 0,
+            sig_subj = 0)
+d <- gendat(mypars)
+d$eta <- log(odd(d$p0)) +
+  d$hosp_int +
+  d$clin_int +
+  d$subj_int 
+d$p <- inv_logit(d$eta)
+d$y <- rbinom(nrow(d), 1, prob = d$p)
+```
+
+```{r, echo = F}
+
+ggplot(d, aes(x = time, y = p, colour = paste0(hosp_id)))+
+  geom_jitter(size = 0.4, alpha = 1, width = 0.1, height=0) +
+  geom_hline(aes(yintercept = p0), lty = 2)+
+  scale_colour_discrete(paste0("Hospital"))+
+  scale_x_continuous("Years from start of study", lim = c(-1, 5))+
+  scale_y_continuous("Proportion vaccinated", lim = c(0, 1), breaks = c(0, 0.5, 1)) +
+  facet_grid(paste0("Start tx ", tx_start) ~ paste0("Clinic ", clin_id))
+```
+
+# Proportion having Vaccination
+
+Now use the simulated probabilities to generate events (receipt of vaccination). The data generating process includes hospital, clinic and subject variation. The data are then summarised as the (represented as constant) proportion vaccinated in each hospital and clinic for each timepoint of the study. The observation from the last year has been extrapolated. There are no trend nor treatment effects present at this stage.
+
+```{r, echo = F}
+mypars <- getpars(hosp_size = 400,
+                  sig_hosp = sqrt(0.1),
+            sig_clin = sqrt(0.1),
+            sig_subj = sqrt(0.6))
+d <- gendat(mypars)
+d$eta <- log(odd(d$p0)) +
+  d$hosp_int +
+  d$clin_int +
+  d$subj_int 
+d$p <- inv_logit(d$eta)
+d$y <- rbinom(nrow(d), 1, prob = d$p)
+
+# aggregate the events to determine the proportion of pop with the event
+dfig <- d[, .(prop = mean(y)), keyby = .(hosp_id, clin_id, time, 
+                                         tx_active, tx_start)]
+
+# We have five timepoints measured. Just extrapolate the last one
+# by hosp and clinic
+dfig2 <- dfig[, .SD[.N], by=.(hosp_id, clin_id)]
+dfig2$time <- 5
+dfig <- rbind(dfig, dfig2)
+
+ds1 <- merge(expand.grid(hosp_id = 1:mypars$pars$n_hosp,
+                 clin_id = 1:mypars$pars$n_clin),
+             data.frame(hosp_id = 1:mypars$pars$n_hosp,
+                        tx_start = rep(1:(mypars$pars$n_hosp/2), each = 2)), 
+             by = "hosp_id")
+
+# ```
+# 
+# ```{r, echo = F}
+ggplot(dfig, aes(x = time, y = prop, group = paste0(hosp_id, ":", clin_id)))+
+  #geom_point(size = 0.4, alpha = 0.2) +
+  geom_step() +
+  geom_line(size = 0.4, alpha = 0.3)+
+  scale_x_continuous("Years from start of study", lim = c(0, 5))+
+  scale_y_continuous("Proportion vaccinated", lim = c(0, 1), breaks = c(0, 0.5, 1)) +
+  facet_grid(paste0("Start tx ", tx_start) ~ paste0("Clinic ", clin_id))+
+  geom_vline(data = ds1, aes(xintercept = tx_start), 
+             lty = 2, size = 0.05)
+
+```
+
+Fit a nested model to this single (purely variance components) instance of the data. 
+
+```{r}
+
+l1 <- glmer(y ~ (1|hosp_id/clin_id/subj_id), 
+            data = d, family = binomial)
+summary(l1)
+sjstats::icc(l1)
+```
+
+# Secular trends and treatment effects
+
+Here we use a constant linear trend (about a relative 1% increase per year) and an instantaneous treatment effect that does not change over time.
+
+```{r, echo = F}
+mypars <- getpars(hosp_size = 400,
+                  sig_hosp = sqrt(0.1),
+            sig_clin = sqrt(0.1),
+            sig_subj = sqrt(0.6))
+d <- gendat(mypars)
+d$eta <- log(odd(d$p0)) +
+  d$hosp_int +
+  d$clin_int +
+  d$subj_int +
+  mypars$pars$sec_trend*d$k1*d$time + 
+  mypars$pars$sec_trend*d$k2*d$time + 
+  mypars$pars$sec_trend*d$k3*d$time + 
+  mypars$pars$sec_trend*d$k4*d$time +
+  mypars$pars$tx*d$tx1 + 
+  mypars$pars$tx*d$tx2 + 
+  mypars$pars$tx*d$tx3 + 
+  mypars$pars$tx*d$tx4
+
+d$p <- inv_logit(d$eta)
+d$y <- rbinom(nrow(d), 1, prob = d$p)
+
+# aggregate the events to determine the proportion of pop with the event
+dfig <- d[, .(prop = mean(y)), keyby = .(hosp_id, clin_id, time, 
+                                         tx_active, tx_start)]
+
+# We have five timepoints measured. Just extrapolate the last one
+# by hosp and clinic
+dfig2 <- dfig[, .SD[.N], by=.(hosp_id, clin_id)]
+dfig2$time <- 5
+dfig <- rbind(dfig, dfig2)
+
+ds1 <- merge(expand.grid(hosp_id = 1:mypars$pars$n_hosp,
+                 clin_id = 1:mypars$pars$n_clin),
+             data.frame(hosp_id = 1:mypars$pars$n_hosp,
+                        tx_start = rep(1:(mypars$pars$n_hosp/2), each = 2)), 
+             by = "hosp_id")
+# ```
+# 
+# ```{r, echo = F}
+
+```
+
+Assuming constant proportion throughout the year.
+
+```{r, echo = F}
+ggplot(dfig, aes(x = time, y = prop, group = paste0(hosp_id, ":", clin_id)))+
+  #geom_point(size = 0.4, alpha = 0.2) +
+  geom_step() +
+  scale_x_continuous("Years from start of study", lim = c(0, 5))+
+  scale_y_continuous("Proportion vaccinated", lim = c(0, 1), breaks = c(0, 0.5, 1)) +
+  facet_grid(paste0("Start tx ", tx_start) ~ paste0("Clinic ", clin_id))+
+  geom_vline(data = ds1, aes(xintercept = tx_start), 
+             lty = 2, size = 0.05)
+```
+
+Interpolated version.
+
+```{r, echo = F}
+ggplot(dfig, aes(x = time, y = prop, group = paste0(hosp_id, ":", clin_id)))+
+  geom_point(size = 0.4, alpha = 0.2) +
+  geom_line(size = 0.4, alpha = 0.3)+
+  scale_x_continuous("Years from start of study", lim = c(0, 5))+
+  scale_y_continuous("Proportion vaccinated", lim = c(0, 1), breaks = c(0, 0.5, 1)) +
+  facet_grid(paste0("Start tx ", tx_start) ~ paste0("Clinic ", clin_id))+
+  geom_vline(data = ds1, aes(xintercept = tx_start), 
+             lty = 2, size = 0.05)
+```
+
+Recover parameters using a GLMM with treatment and time effects (plus variance components).
+
+```{r}
+
+l1 <- glmer(y ~ tx_active + time + (1|hosp_id/clin_id/subj_id), 
+            data = d, family = binomial)
+summary(l1)
+sjstats::icc(l1)
+```
+
+# Bibliography
+
+
