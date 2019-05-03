@@ -278,7 +278,7 @@ sig_subj <- c(sqrt(0.8), sqrt(1.4))
 sig_clin = c(sqrt(0.075), sqrt(0.1))
 sig_hosp <- c(sqrt(0.075), sqrt(0.1))
 tx <- c(0.5, 0.6, 0.7)
-sec_trend = c(0.05, 0.075)
+sec_trend = c(0.05)
 
 par_space <- data.table::CJ(p0=p0, 
                             sig_subj= sig_subj,
@@ -301,7 +301,7 @@ results <- foreach(i = 1:nsim,
                    .packages=c("lme4", "data.table", "compiler", "sjstats")
 ) %dopar%{
   
-  if(i == 1 | i %% 10 == 0)  message("Starting trial ", i)
+  message("Starting trial ", i, " with ", nrow(par_space), " variations.")
   
   theseed <- i + 100000
   set.seed(theseed)
@@ -342,7 +342,7 @@ results <- foreach(i = 1:nsim,
     d$y <- rbinom(nrow(d), 1, prob = d$p)
   
     l1 <- tryCatch({
-            glmer(y ~ tx_active + time + (1|hosp_id/clin_id/subj_id), 
+            glmer(y ~ tx_active + time + (1|hosp_id/id), 
                   data = d, family = binomial)
         },
         error=function(cond) {
@@ -356,7 +356,7 @@ results <- foreach(i = 1:nsim,
             return(NA)
         })
     
-    if(is.na(l1) | sjstats::is_singular(l1)){
+    if(is.na(l1) | sjstats::is_singular(l1) | !sjstats::converge_ok(l1)){
       sing <- sjstats::is_singular(l1)
       lres[[j]] <- data.table(simid = i, parid = j, 
                               singular = sing, est = NA, 
