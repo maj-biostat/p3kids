@@ -273,7 +273,7 @@ gendat <- cmpfun(function(mypars){    # 1.77
 Rather than using the full cluster sizes (around 1000, which makes calculations unwieldy) I assume that a simple random sample of size 320 and is representative of the population has been taken from each cluster. Parameter space examines a range of hospital and subject level variance, baseline probability, treatment effects and secular trends.
 
 ```{r}
-p0 <- c(0.4, 0.5)
+p0 <- c(0.5)
 sig_subj <- c(sqrt(0.8), sqrt(1.4))
 sig_clin = c(sqrt(0.1))
 sig_hosp <- c(sqrt(0.1))
@@ -369,6 +369,9 @@ results <- foreach(i = 1:nsim,
     names(dfit) <- c("simid", "parid", "singular","est", "se", "z", "p")
     lres[[j]] <- dfit
   }
+  
+  message("Completed trial ", i, " runtime ", 
+          round(difftime(Sys.time(), starttime, units = "hours"), 3), " hrs.")
   rbindlist(lres)
 }
 
