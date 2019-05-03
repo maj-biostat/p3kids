@@ -275,8 +275,8 @@ Rather than using the full cluster sizes (around 1000, which makes calculations 
 ```{r}
 p0 <- c(0.4, 0.5)
 sig_subj <- c(sqrt(0.8), sqrt(1.4))
-sig_clin = c(sqrt(0.075), sqrt(0.1))
-sig_hosp <- c(sqrt(0.075), sqrt(0.1))
+sig_clin = c(sqrt(0.1))
+sig_hosp <- c(sqrt(0.1))
 tx <- c(0.5, 0.6, 0.7)
 sec_trend = c(0.05)
 
