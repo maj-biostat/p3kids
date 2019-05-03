@@ -291,7 +291,7 @@ par_space <- data.table::CJ(p0=p0,
 We apply a suitably parameterised GLMM.
 
 ```{r, eval = T}
-nsim <- 1000
+nsim <- 500
 starttime <- Sys.time()
 cl <- makeCluster(parallel::detectCores() - 2, outfile="")
 registerDoParallel(cl)
