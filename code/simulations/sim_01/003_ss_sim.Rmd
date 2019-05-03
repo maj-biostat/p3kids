@@ -273,12 +273,12 @@ gendat <- cmpfun(function(mypars){    # 1.77
 Rather than using the full cluster sizes (around 1000, which makes calculations unwieldy) I assume that a simple random sample of size 320 and is representative of the population has been taken from each cluster. Parameter space examines a range of hospital and subject level variance, baseline probability, treatment effects and secular trends.
 
 ```{r}
-p0 <- c(0.5)
+p0 <- c(0.4, 0.5)
 sig_subj <- c(sqrt(0.8), sqrt(1.4))
-sig_clin = c(sqrt(0.1))
-sig_hosp <- c(sqrt(0.1))
+sig_clin = c(sqrt(0.075), sqrt(0.1))
+sig_hosp <- c(sqrt(0.075), sqrt(0.1))
 tx <- c(0.5, 0.6, 0.7)
-sec_trend = c(0.05)
+sec_trend = c(0.05, 0.075)
 
 par_space <- data.table::CJ(p0=p0, 
                             sig_subj= sig_subj,
@@ -291,10 +291,22 @@ par_space <- data.table::CJ(p0=p0,
 We apply a suitably parameterised GLMM.
 
 ```{r, eval = T}
-nsim <- 500
+nsim <- 1000
 starttime <- Sys.time()
 cl <- makeCluster(parallel::detectCores() - 2, outfile="")
 registerDoParallel(cl)
+
+
+nlopt <- function(par, fn, lower, upper, control) {
+    .nloptr <<- res <- nloptr(par, fn, lb = lower, ub = upper, 
+        opts = list(algorithm = "NLOPT_LN_BOBYQA", print_level = 1,
+        maxeval = 1000, xtol_abs = 1e-6, ftol_abs = 1e-6))
+    list(par = res$solution,
+         fval = res$objective,
+         conv = if (res$status > 0) 0 else res$status,
+         message = res$message
+    )
+}
 
 results <- foreach(i = 1:nsim,
                    .errorhandling = 'pass',
@@ -310,7 +322,7 @@ results <- foreach(i = 1:nsim,
   
   for(j in 1:nrow(par_space)){
     
-    mypars <- getpars(hosp_size = 320,
+    mypars <- getpars(hosp_size = 240,
                       p0 = par_space$p0[j],
                       sig_subj = par_space$sig_subj[j],
                       sig_clin = par_space$sig_clin[j],
@@ -343,7 +355,9 @@ results <- foreach(i = 1:nsim,
   
     l1 <- tryCatch({
             glmer(y ~ tx_active + time + (1|hosp_id/id), 
-                  data = d, family = binomial)
+                  data = d, family = binomial,
+                  control = glmerControl(optimizer = "nloptwrap", 
+                                         calc.derivs = FALSE))
         },
         error=function(cond) {
             message(paste("Error:", cond))
