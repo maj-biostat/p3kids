@@ -275,12 +275,14 @@ Rather than using the full cluster sizes (around 1000, which makes calculations 
 ```{r}
 p0 <- c(0.4, 0.5)
 sig_subj <- c(sqrt(0.8), sqrt(1.4))
-sig_hosp <- c(sqrt(0.05), sqrt(0.1))
-tx <- c(0.6, 0.7, 0.8)
-sec_trend = c(0.05, 0.1)
+sig_clin = c(sqrt(0.075), sqrt(0.1))
+sig_hosp <- c(sqrt(0.075), sqrt(0.1))
+tx <- c(0.5, 0.6, 0.7)
+sec_trend = c(0.05, 0.075)
 
 par_space <- data.table::CJ(p0=p0, 
                             sig_subj= sig_subj,
+                            sig_clin= sig_clin,
                             sig_hosp= sig_hosp,
                             tx= tx,
                             sec_trend= sec_trend)
@@ -311,6 +313,7 @@ results <- foreach(i = 1:nsim,
     mypars <- getpars(hosp_size = 320,
                       p0 = par_space$p0[j],
                       sig_subj = par_space$sig_subj[j],
+                      sig_clin = par_space$sig_clin[j],
                       sig_hosp = par_space$sig_hosp[j],
                       tx = par_space$tx[j],
                       sec_trend = par_space$sec_trend[j])
