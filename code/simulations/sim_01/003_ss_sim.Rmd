@@ -1,0 +1,514 @@
+---
+title: "P3 Kids - power and sample size simulation"
+subtitle: "`r knitr::current_input(dir = TRUE)`"
+author: "Mark Jones"
+date: "`r Sys.time()`"
+editor_options:
+  chunk_output_type: console
+output:
+  html_document:
+    theme: united
+    toc: yes
+  pdf_document:
+    toc: yes
+    toc_depth: 3
+    number_sections: true
+    fig_caption: yes
+bibliography: steppedwedge.bib
+---
+
+
+# Preamble
+
+This document is mainly about computing sample size and power. A useful reference for simulating from an MLM with binary response is @Moineddin2007. @Wu2012 provides guidance on ICC.
+
+# Todo
+
+Use this approach to generate data then model and assess:
+
+1. rather than adopt the cohort clustered do simple random sampling and a cross-sectional assumption/sw - q is this more powerful?
+1. icc 
+2. implication for correlation between measures
+3. model non-linear calendar time effect
+4. model non-linear exposure time effect
+
+See @Thompson2018 chapter 3. Includes:
+
++ random effect for cluster-period interactions
++ random effect for each period
++ intervention lag and wane
++ random intervention model
+
+
+```{r, echo = F}
+suppressPackageStartupMessages(library(compiler))
+suppressPackageStartupMessages(library(data.table))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(knitr))
+suppressPackageStartupMessages(library(kableExtra))
+suppressPackageStartupMessages(library(lme4))
+suppressPackageStartupMessages(library(doParallel))
+suppressPackageStartupMessages(library(foreach))
+
+ggplot2::theme_set(ggplot2::theme_bw())
+ggplot2::theme_update(text = element_text(size = 10))
+ggplot2::theme_update(legend.position = "top")
+# ggplot2::theme_update(legend.title = element_blank())
+ggplot2::theme_update(axis.text.x = element_text(size = 10))
+ggplot2::theme_update(axis.text.y = element_text(size = 10))
+
+
+var_e <- (pi^2)/3
+
+inv_logit <- cmpfun(function(x){
+  return(exp(x)/(1+exp(x)))
+})
+odd <- cmpfun(function(p){
+  return(p/(1-p))
+})
+prob <- cmpfun(function(odd){
+  return(odd/(1+odd))
+})
+```
+
+
+# Data generation assumptions
+
+The study runs from start of 2020 to the end of 2024. The first step happens in Jan 2021 and there are four steps in total (2021, 22, 23, 24). In 2024 all clusters have crossed into the intervention arm.  We can observe the proportion vaccinated in October each year. We will have measurements for the proportion vac in the baseline year (2020) and around the end of each step (year).
+
+The hospitals (and assumptions about the size of the target population) involved are:
+
+1. Perth Children's Hospital 1000; 
+2. Royal Children's Melbourne   1100
+3. Monash Children's Hospitals, Melbourne 1200 
+4. Westmead Children's, Sydney 1100
+5. Sydney Children's Discrete 1300
+6. Queensland Children's Hospital, Brisbane Discrete 900
+7. Women's and Children's Hospital, Adelaide 800
+8. Royal Darwin Hospital 500
+
+We only have access to these hospitals, i.e. number of clusters cannot vary, so here we just look at the effects of the parameter-space on the distribution of power for given treatment effect sizes. The cluster size is so large that we could sample (simple random sample with replacement with $n \approx 100$ at each step) from them and then we could ignore the subject-level correlation structure.
+
+For clinics, we don't have good estimates of the unit sizes so here we assume that each hospital has five clinics and their sizes are generated from a multinomialbution with probabilities 0.1, 0.15, 0.2, 0.2 and 0.35. This means that if the hospital size was 1000 then the expected sizes of the clinics would be 100, 150, 200 etc. We assume that the clinic sizes remain constant throughout the study.
+
++ Hospital/cluster sizes are from above and assumed to remain constant over the duration of the trial.
++ Each person has their own random intercept that corresponds to a correlation between measures ranging between 0.15 and 0.35. 
++ The grand mean of the baseline probability of vaccination is assumed to arise from a shifted t-distribution with location 0.45, a scale of 0.03 and 6 degrees of freedom (see appendix 1) yielding a standard deviation of roughly 0.04.
++ There is an instaneous treatment effect (i.e. no lagged build up) ranging from an odds ratio of 1.5 to 2.5
++ There is a secular trend that is linear with an odds ratios between 1.01 and 1.03. Applied to a baseline (grand mean) probability of vaccination equal to 0.4 these imply an absolute increase in the probability of vaccination between 0.01 and 0.03.
+```{r, echo = F, eval = F}
+t <- 0:4
+eta <- log(odd(0.4)) + log(1.01) * t
+inv_logit(eta)
+eta <- log(odd(0.4)) + log(1.03) * t
+inv_logit(eta)
+```
++ The between-hospital variation is between $\mathcal{N}(0, \sqrt{0.1})$ and $\mathcal{N}(0, \sqrt{0.2})$. Applied to a baseline (grand mean) probability of vaccination equal to 0.4 a $\mathcal{N}(0, 0.3)$ assumption for the hospital variance implies that the hospital-level probability of vaccination might reasonably be anywhere in the range of 0.25 to 0.6.
+```{r, echo = F, eval = F}
+eta1 <- log(odd(0.4)) - 0.69
+inv_logit(eta1)
+eta2 <- log(odd(0.4)) + 0.69
+inv_logit(eta2)
+```
++ The between-clinic level variation is between $\mathcal{N}(0, \sqrt{0.1})$ and $\mathcal{N}(0, \sqrt{0.2})$.
+
+# Parameter and Data generation
+
+Parameters.
+
+```{r}
+# parameters
+getpars <- cmpfun(function(hosp_name = c("pch", "rcmel", "monch", 
+                                         "westmdcs", "sydch", "qch", 
+                                         "wchade", "rdarwh"),
+                           hosp_size = c(100, 110, 120, 110, 130, 90, 80, 50),
+                           n_hosp_grp = 2,
+                    sig_hosp = sqrt(0.1),
+                    sig_clin = sqrt(0.1),
+                    sig_subj = sqrt(0.6),
+                    p0 = 0.45,
+                    tx = 0.7,
+                    sec_trend = 0.05,
+                    exp_trend = 0.0){
+
+  lpar <- vector("list", 3)
+  
+  # hospitals
+  hosp_name <- hosp_name
+  #hosp_size <- c(1000, 1100, 1200, 1100, 1300, 900, 800, 500)
+  
+
+  if(length(hosp_size) == 1){
+    hosp_size <- rep(hosp_size, length(hosp_name))
+  } 
+  stopifnot(length(hosp_size) == length(hosp_name))
+  
+  
+  prop_clinic <- c(0.1, 0.15, 0.2, 0.2, 0.35)
+  lhosps <- list()
+  for(i in 1:length(hosp_name)){
+    
+    z = 0
+    clin_size = rmultinom(1, hosp_size[i], prop_clinic)
+    while(any(clin_size == 0)){
+      z <- z + 1
+      clin_size = rmultinom(1, hosp_size[i], prop_clinic)
+      stopifnot(z < 9)
+    }
+    
+    l <- list(name = hosp_name[i],
+              N = hosp_size[i],
+              clin_size = clin_size)
+    lhosps[[i]] <- l
+  }
+  # randomise order
+  idx_permute <- sample(1:length(hosp_name), 
+                        size = length(hosp_name), 
+                        replace = F)
+  lhosps <- lapply(idx_permute, function(x) lhosps[[x]])
+  names(lhosps) <- hosp_name[idx_permute]
+  lpar[[1]] <- lhosps
+  
+  # global parameters
+  pars <- list()
+  pars$hosp_name <- hosp_name[idx_permute]
+  pars$hosp_size <- hosp_size[idx_permute]
+  pars$n_hosp <- length(hosp_name)
+  pars$n_hosp_grp <- n_hosp_grp
+  pars$n_clin <- length(prop_clinic)
+  pars$n_subj_tot <- sum(unlist(lapply(1:pars$n_hosp, 
+                                  function(x) 
+                                    sum(lhosps[[x]]$clin_size))))
+  pars$sig_hosp <- sig_hosp
+  pars$sig_clin <- sig_clin
+  pars$sig_subj <- sig_subj
+  pars$p0 <- p0
+  pars$t <- 0:4
+  pars$n_obs <- length(pars$t)*pars$n_subj_tot
+  pars$tx <- tx
+  pars$sec_trend <- sec_trend
+  pars$exp_trend <- exp_trend
+  pars$z <- z
+  lpar[[2]] <- pars
+  
+  tx_start <- data.frame(hosp_id = 1:pars$n_hosp, 
+                       tx_start = rep(1:(pars$n_hosp/pars$n_hosp_grp), 
+                                      each = pars$n_hosp_grp))
+  
+  lpar[[3]] <- tx_start
+  
+  names(lpar) <- c("hosps", "pars", "tx_start")
+  
+  lpar
+})
+mypars <- getpars()
+```
+
+Data generation.
+
+```{r, echo = T}
+gendat <- cmpfun(function(mypars){    # 1.77
+  
+  
+  # hospital, clinic, person, time
+  hosp_int <- rnorm(mypars$pars$n_hosp, 0, mypars$pars$sig_hosp)
+  clin_int <- rnorm(mypars$pars$n_hosp*mypars$pars$n_clin, 0, mypars$pars$sig_clin)
+  subj_int <- rnorm(mypars$pars$n_subj_tot, 0, mypars$pars$sig_subj)
+  
+  l <- lapply(1:mypars$pars$n_hosp, function(x){
+    lapply(1:mypars$pars$n_clin, function(y){
+      data.table::CJ(x,
+                     mypars$hosps[[x]]$name,
+                     y,
+                     1:mypars$hosps[[x]]$clin_size[y],
+                     mypars$pars$t,
+                     hosp_int[x],
+                     clin_int[y+y*(x-1)])
+    })
+  })
+  d0 <- rbindlist(lapply(l, rbindlist))
+  
+  if(nrow(d0)==3960){
+    stop()
+  }
+  
+  d0$subj_int <- rep(subj_int, each = length(mypars$pars$t))
+  
+  names(d0) <- c("hosp_id", "hosp", "clin_id", "subj_id", 
+                 "time", "hosp_int", "clin_int", "subj_int")
+
+  # unique id for each patient
+  d0$id <- interaction(d0$hosp_id, d0$clin_id, d0$subj_id)
+
+  # baseline prob (grand mean)
+  d0$p0 <- mypars$pars$p0
+  
+  # tx
+  
+  d0 <- merge(d0, mypars$tx_start, by = "hosp_id")
+  d0$tx_active <- as.numeric(d0$time >= d0$tx_start)
+  
+  # calendar trends
+  d0$k1 <- as.numeric(d0$time == 1)
+  d0$k2 <- as.numeric(d0$time == 2)
+  d0$k3 <- as.numeric(d0$time == 3)
+  d0$k4 <- as.numeric(d0$time == 4)
+  
+  setorder(d0, hosp_id, clin_id, subj_id, time)
+  
+  # exposure trends
+  d0$tx_durn <- ave(d0$tx_active, d0$hosp_id, d0$clin_id, d0$subj_id, FUN=cumsum)
+  d0$tx1 <- as.numeric(d0$tx_durn == 1)
+  d0$tx2 <- as.numeric(d0$tx_durn == 2)
+  d0$tx3 <- as.numeric(d0$tx_durn == 3)
+  d0$tx4 <- as.numeric(d0$tx_durn == 4)
+
+  d0
+})
+
+```
+
+# Simulation (sample size and power)
+
+Rather than using the full cluster sizes (around 1000, which makes calculations unwieldy) I assume that a simple random sample of size 320 and is representative of the population has been taken from each cluster. Parameter space examines a range of hospital and subject level variance, baseline probability, treatment effects and secular trends.
+
+```{r}
+p0 <- c(0.4, 0.5)
+sig_subj <- c(sqrt(0.8), sqrt(1.4))
+sig_hosp <- c(sqrt(0.05), sqrt(0.1))
+tx <- c(0.6, 0.7, 0.8)
+sec_trend = c(0.05, 0.1)
+
+par_space <- data.table::CJ(p0=p0, 
+                            sig_subj= sig_subj,
+                            sig_hosp= sig_hosp,
+                            tx= tx,
+                            sec_trend= sec_trend)
+```
+
+We apply a suitably parameterised GLMM.
+
+```{r, eval = T}
+nsim <- 1000
+starttime <- Sys.time()
+cl <- makeCluster(parallel::detectCores() - 2, outfile="")
+registerDoParallel(cl)
+
+results <- foreach(i = 1:nsim,
+                   .errorhandling = 'pass',
+                   .packages=c("lme4", "data.table", "compiler", "sjstats")
+) %dopar%{
+  
+  if(i == 1 | i %% 10 == 0)  message("Starting trial ", i)
+  
+  theseed <- i + 100000
+  set.seed(theseed)
+  
+  lres <- vector("list", nrow(par_space))
+  
+  for(j in 1:nrow(par_space)){
+    
+    mypars <- getpars(hosp_size = 320,
+                      p0 = par_space$p0[j],
+                      sig_subj = par_space$sig_subj[j],
+                      sig_hosp = par_space$sig_hosp[j],
+                      tx = par_space$tx[j],
+                      sec_trend = par_space$sec_trend[j])
+    
+    mypars$pars$seed <- theseed
+    mypars$pars$nsim <- nsim
+    
+    # format(object.size(mypars), units = "b")
+    if(mypars$pars$z > 0)  message("Note - multiple on z  = ", mypars$pars$z)
+  
+    d <- gendat(mypars)
+    d$eta <- log(odd(d$p0)) +
+      d$hosp_int +
+      d$clin_int +
+      d$subj_int +
+      mypars$pars$sec_trend*d$k1*d$time + 
+      mypars$pars$sec_trend*d$k2*d$time + 
+      mypars$pars$sec_trend*d$k3*d$time + 
+      mypars$pars$sec_trend*d$k4*d$time +
+      mypars$pars$tx*d$tx1 + 
+      mypars$pars$tx*d$tx2 + 
+      mypars$pars$tx*d$tx3 + 
+      mypars$pars$tx*d$tx4
+  
+    d$p <- inv_logit(d$eta)
+    d$y <- rbinom(nrow(d), 1, prob = d$p)
+  
+    l1 <- tryCatch({
+            glmer(y ~ tx_active + time + (1|hosp_id/clin_id/subj_id), 
+                  data = d, family = binomial)
+        },
+        error=function(cond) {
+            message(paste("Error:", cond))
+            # Choose a return value in case of error
+            return(NA)
+        },
+        warning=function(cond) {
+            message(paste("Warning:", cond))
+            # Choose a return value in case of warning
+            return(NA)
+        })
+    
+    if(is.na(l1) | sjstats::is_singular(l1)){
+      sing <- sjstats::is_singular(l1)
+      lres[[j]] <- data.table(simid = i, parid = j, 
+                              singular = sing, est = NA, 
+                              se = NA, z = NA, p = NA)
+      next
+    }
+    dfit <- data.table(cbind(simid = i, parid = j, 
+                             singular = F, summary(l1)$coef))
+    
+    names(dfit) <- c("simid", "parid", "singular","est", "se", "z", "p")
+    lres[[j]] <- dfit
+  }
+  rbindlist(lres)
+}
+
+stopCluster(cl)
+endtime <- Sys.time()
+difftime(endtime, starttime, units = "hours")
+rdsfilename <- paste0("p3-pwr-", 
+                      format(Sys.time(), "%Y-%m-%d-%H-%M-%S"), ".RDS")
+saveRDS(list(results = rbindlist(results), 
+             starttime = starttime,
+             endtime = endtime ), rdsfilename)
+```
+
+The parameters we rigged the data with were follow. The interpretation of the nested variance components is complicated and uncessary at this time so am waving those estimates away. What is of note is that a 2-level structure can be estimated reasonbly well but a 3-level structure cannot (not shown).
+
+```{r, echo = F, eval = F}
+pwr <- readRDS("p3-pwr-2019-05-03-11-56-46.RDS")
+
+summary(pwr$results)
+# lapply(1:length(pwr)
+```
+
+
+```{r, echo = F, eval = F}
+dpar <- data.table(term = c("intercept", "time", "trt"))
+dpar$true_val <- c(-0.2, 0.05, 0.85)
+v <-  as.data.frame(VarCorr(l1))
+dpar$fit_val <- c(fixef(l1))
+dpar$fit_val <- round(dpar$fit_val, 3)
+dpar %>%
+  kable( col.names = c("Term", "True Value", "Fitted")) %>%
+  kable_styling(bootstrap_options = "striped", full_width = F)
+```
+
+
+# Summary
+
+This has mostly been about model specification and visualisation. Next we will return to sample size and power.
+
+
+
+
+
+
+```{r, echo = F, eval = F}
+solve_icc <- function(rho_i, rho_j){
+  
+  p1 <- rho_j*(pi^2)/3
+  p2 <- ((1-rho_j)*(1-rho_i) - (rho_i*rho_j))
+  
+  var_j <- p1 / p2
+  # var_j
+  # (pi^2)/27
+  
+  var_i <- (pi^2)/3 + var_j
+  # var_i
+  # 10*(pi^2)/27
+  
+  return(list(var_i = var_i, var_j = var_j))
+}
+```
+
+```{r, echo = F, eval = F}
+# Correlated repeat measures on individual (id) in wide format 
+db<- genCorGen(1000, nvars = 10, params1 = .6, dist = "binary", 
+          rho = 0.8, corstr = "cs", wide = TRUE)
+db
+# see https://www.rdatagen.net/post/correlated-data-copula/ for
+# intuition on why correlation < 0.8 specified
+cnames <- names(db)[-1]
+round(cor(as.matrix(db[, ..cnames])), 2)
+```
+
+
+```{r, echo = F, eval = F}
+# Binomial ICC lme4 (numerator can also be a list of values)
+# function based off of http://www.ncbi.nlm.nih.gov/pmc/articles/PMC3426610/
+ICC.BIN <- function(model, numerator){
+  require(lme4)
+  # random intercept model variances
+  mout <- data.frame(VarCorr(model)) 
+  # level 1 variance of all binomial models
+  level1 <- pi^2 / 3 
+  # random effect(s) in numerator
+  sigma_a2 <- sum(mout[mout$grp %in% numerator,"vcov"]) 
+   # sum ofrandom effects variance in denominator
+  sigma_2 <- sum(data.frame(VarCorr(model))[,"vcov"], level1)
+  icc <- sigma_a2 / sigma_2
+  return(icc)
+}
+
+```
+
+
+
+# Appendix 1
+
+Location scale transformation for student-t distribution. Student-t has zero mean and variance determined by the degrees of freedom. It can be specified via location-scale transform.
+
+See https://grollchristian.wordpress.com/2013/04/30/students-t-location-scale/
+
+\being{aligned}
+Y &= aX + b  \\
+\mathbb{E}[Y] &= b \\
+\mathbb{V}[Y] &= a^2 \mathbb{V}[X] \\
+&= a^2 \frac{\nu}{\nu - 2} \\
+\end{aligned}
+
+where $X \sim t$. Note that $a$ is not the variance but is used to scale the variance of the original $X$ random variable. 
+
+```{r}
+a <- 0.03
+df <- 6
+# standard deviation is
+sqrt((a^2) * df/(df -2))
+```
+
+
+The implementation is:
+
+```{r}
+dt_ls <- function(x, df, mu, a) 1/a * dt((x - mu)/a, df)
+pt_ls <- function(x, df, mu, a) pt((x - mu)/a, df)
+qt_ls <- function(prob, df, mu, a) qt(prob, df)*a + mu
+rt_ls <- function(n, df, mu, a) rt(n,df)*a + mu
+```
+
+e.g.
+
+```{r}
+x <- seq(0, 1, len = 100)
+y <- dt_ls(x, 6, 0.45, 0.03)
+plot(x, y, type = "l")
+```
+
+# References
+
+References for lmer:
++ https://stackoverflow.com/questions/54597496/how-to-cope-with-a-singular-fit-in-a-linear-mixed-model-lme4
++ https://stats.stackexchange.com/questions/378939/dealing-with-singular-fit-in-mixed-models
++ https://cran.r-project.org/web/packages/lme4/vignettes/lmer.pdf
++ https://rpsychologist.com/r-guide-longitudinal-lme-lmer
++ http://www.maths.bath.ac.uk/~jjf23/mixchange/repeated.html
++ http://www.maths.bath.ac.uk/~jjf23/mixchange/index.html
++ http://www.maths.bath.ac.uk/~jjf23/stan/
+
